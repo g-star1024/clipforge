@@ -1,6 +1,9 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useModelCatalog } from "@/lib/hooks/use-model-catalog";
+import { ModelCatalogStatus } from "@/components/model-catalog-status";
+
+import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { useParams } from "next/navigation";
 import { LuZap, LuCheck, LuCircleX, LuImage, LuArrowRight, LuLoaderCircle, LuTriangleAlert, LuUpload, LuScissors } from "react-icons/lu";
 import Link from "next/link";
@@ -106,8 +109,6 @@ export default function AssetsPage() {
   // real tail frames of videos generated THIS session (shotId → extracted last-frame URL);
   // tail-chain mode starts the next shot from here for a pixel-continuous cut
   const lastFrameByShot = useRef(new Map<number, string>());
-  const [modelTarget, setModelTarget] = useState<ImageModelTarget | null>(null);
-  const [videoModelTarget, setVideoModelTarget] = useState<ImageModelTarget | null>(null);
   // shots currently being converted to motion
   const [motionShots, setMotionShots] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(true);
@@ -143,6 +144,19 @@ export default function AssetsPage() {
   const allDone = assets.length > 0 && doneCount === assets.length;
   // real/AI mix metering (duration-weighted) — Douyin tilts traffic toward hybrid content at ≥50% real
   const mix = realMixFromRows(assets);
+  const enabledCatalogProviders = Object.entries(providers).filter(([, p]) => p.enabled && p.apiKey).map(([name, p]) => ({ name, apiKey: p.apiKey, baseUrl: p.baseUrl }));
+  const catalog = useModelCatalog(enabledCatalogProviders);
+  const [modelTarget, videoModelTarget] = useMemo((): [ImageModelTarget | null, ImageModelTarget | null] => {
+    const enabled = Object.entries(providers).filter(([, p]) => p.enabled && p.apiKey).map(([name, p]) => ({ name, apiKey: p.apiKey, baseUrl: p.baseUrl }));
+    const names = new Set(enabled.map((p) => p.name));
+    const resolve = (type: "image" | "video", modelId: string) => {
+      const model = mergeCustomModels(catalog.models.filter((item) => item.mediaType === type), customModels, type, names).find((item) => item.id === modelId);
+      const provider = model && enabled.find((item) => item.name === model.provider);
+      return model && provider ? { provider: provider.name, model: modelId, apiKey: provider.apiKey, baseUrl: provider.baseUrl, supportsAudio: model.supportsAudio } : null;
+    };
+    return [resolve("image", defaultImageModel), resolve("video", defaultVideoModel)];
+  }, [providers, customModels, defaultImageModel, defaultVideoModel, catalog.models]);
+
   // when no image model is configured (modelTarget is null), offer key-free users a free stock fill entry point
   const offerStockFill = !loading && shouldOfferStockFill(assets, contentType, modelTarget !== null);
   // only show the "configure a model" warning when there are still AI shots that need generating (no warning once everything is ready, to avoid contradicting the "all done" state)
@@ -361,78 +375,6 @@ export default function AssetsPage() {
       setIsFillingStock(false);
     }
   }, [id, isFillingStock, reloadAssets, t, llm.baseUrl, llm.apiKey, llm.model]);
-
-  // resolve the provider for the default image model (locate provider by model from /api/ai/models aggregated results)
-  useEffect(() => {
-    let cancelled = false;
-    const enabled = Object.entries(providers)
-      .filter(([, p]) => p.enabled && p.apiKey)
-      .map(([name, p]) => ({ name, apiKey: p.apiKey, baseUrl: p.baseUrl }));
-    if (enabled.length === 0 || !defaultImageModel) {
-      setModelTarget(null);
-      return;
-    }
-    (async () => {
-      try {
-        const res = await fetch("/api/ai/models", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ providers: enabled, mediaType: "image" }),
-        });
-        if (!res.ok) return;
-        const data = await res.json();
-        // merge user-defined custom models so they can also be resolved to their provider
-        const merged = mergeCustomModels(data.models ?? [], customModels, "image", new Set(enabled.map((e) => e.name)));
-        const model = merged.find((m) => m.id === defaultImageModel);
-        if (cancelled || !model) return;
-        const prov = enabled.find((e) => e.name === model.provider);
-        if (prov) {
-          setModelTarget({ provider: prov.name, model: defaultImageModel, apiKey: prov.apiKey, baseUrl: prov.baseUrl });
-        }
-      } catch {
-        // ignore; generateOne will surface the "not configured" error when called
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [providers, defaultImageModel, customModels]);
-
-  // resolve the provider for the default video model (used for "convert to motion shot")
-  useEffect(() => {
-    let cancelled = false;
-    const enabled = Object.entries(providers)
-      .filter(([, p]) => p.enabled && p.apiKey)
-      .map(([name, p]) => ({ name, apiKey: p.apiKey, baseUrl: p.baseUrl }));
-    if (enabled.length === 0 || !defaultVideoModel) {
-      setVideoModelTarget(null);
-      return;
-    }
-    (async () => {
-      try {
-        const res = await fetch("/api/ai/models", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ providers: enabled, mediaType: "video" }),
-        });
-        if (!res.ok) return;
-        const data = await res.json();
-        // merge user-defined custom video models
-        const merged = mergeCustomModels(data.models ?? [], customModels, "video", new Set(enabled.map((e) => e.name)));
-        const model = merged.find((m) => m.id === defaultVideoModel);
-        if (cancelled || !model) return;
-        const prov = enabled.find((e) => e.name === model.provider);
-        if (prov) {
-          setVideoModelTarget({ provider: prov.name, model: defaultVideoModel, apiKey: prov.apiKey, baseUrl: prov.baseUrl, supportsAudio: model.supportsAudio });
-        }
-      } catch {
-        // ignore
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [providers, defaultVideoModel, customModels]);
 
   // load cloud tasks whose results were never retrieved (issue #16) so the user can
   // recover a paid task instead of resubmitting (and paying again)
@@ -988,6 +930,7 @@ export default function AssetsPage() {
       />
 
       <main className="mx-auto max-w-4xl px-6 py-8">
+        <ModelCatalogStatus statuses={catalog.statuses} pending={catalog.pending} onRetry={catalog.retry} />
         {/* Action bar: title + generation ACTIONS only. Creative settings live in the
             director panel below so this row stays a stable, scannable set of verbs. */}
         <div className="flex flex-wrap items-center justify-between gap-y-3 mb-4">

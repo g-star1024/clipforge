@@ -4,7 +4,7 @@ import { apiError, errText } from "@/lib/api-error";
 import { getDb } from "@/lib/db";
 import { mediaSources, projects } from "@/lib/db/schema";
 import { probeMedia } from "@/lib/media-probe";
-import { keepRangesForPlan, sanitizeTranscriptDocument, sanitizeTranscriptEditPlan } from "@/lib/transcript-editor";
+import { keepRangesForPlan, remapKeptWords, sanitizeTranscriptDocument, sanitizeTranscriptEditPlan } from "@/lib/transcript-editor";
 import { exportTimeline, type TimelineExportFormat } from "@/lib/timeline-export";
 
 export const runtime = "nodejs";
@@ -30,12 +30,12 @@ export async function POST(
     if (!project || !source) return apiError(req, "项目或素材不存在", "Project or media source not found", 404);
     const transcript = sanitizeTranscriptDocument(source.transcript, source.duration / 1000);
     if (!transcript) return apiError(req, "请先完成素材转写", "Transcribe the media before exporting a timeline", 409);
-    const plan = sanitizeTranscriptEditPlan(body.plan, new Set(transcript.words.map((word) => word.id)));
+    const plan = sanitizeTranscriptEditPlan(body.plan, new Set(transcript.words.map((word) => word.id)), transcript.duration);
     const keepRanges = keepRangesForPlan(transcript, plan);
     if (!keepRanges.length) return apiError(req, "当前草稿没有可导出的保留片段", "The current draft has no kept clips to export", 422);
     const metadata = await probeMedia(source.filePath);
     const clipNotes = keepRanges.map((range) => {
-      const words = transcript.words.filter((word) => word.end > range.start && word.start < range.end);
+      const words = remapKeptWords(transcript, [range], plan);
       const cjk = words.some((word) => /[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(word.text));
       return (cjk ? words.map((word) => word.text).join("") : words.map((word) => word.text).join(" ")).slice(0, 2_000);
     });
@@ -60,6 +60,8 @@ export async function POST(
       },
     });
   } catch (error) {
+    if (error instanceof RangeError && error.message === "INVALID_CAPTION_REPLACEMENTS") return apiError(req, "字幕校对内容无效，请检查后重试", "Invalid caption corrections", 422);
+    if (error instanceof RangeError && error.message === "INVALID_TRANSCRIPT_SOURCE_RANGE") return apiError(req, "保留区间无效或超出原片时长", "Invalid source range or range exceeds source duration", 422);
     console.error("Timeline export failed:", error);
     return NextResponse.json({ error: error instanceof Error ? error.message : errText(req, "时间线导出失败", "Failed to export timeline") }, { status: 500 });
   }

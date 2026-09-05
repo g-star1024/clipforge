@@ -25,7 +25,7 @@ export async function mapWithConcurrency<T, R>(
 }
 
 /** A function that schedules `fn` through a shared concurrency gate and resolves/rejects with its result */
-export type Limiter = <T>(fn: () => Promise<T> | T) => Promise<T>;
+export type Limiter = <T>(fn: () => Promise<T> | T, signal?: AbortSignal) => Promise<T>;
 
 /**
  * Create a reusable FIFO concurrency limiter: at most `max` tasks run at once,
@@ -46,9 +46,16 @@ export function createLimiter(max: number): Limiter {
     if (next) next();
   }
 
-  return function schedule<T>(fn: () => Promise<T> | T): Promise<T> {
+  return function schedule<T>(fn: () => Promise<T> | T, signal?: AbortSignal): Promise<T> {
     return new Promise<T>((resolve, reject) => {
+      if (signal?.aborted) { reject(signal.reason); return; }
+      const abort = () => {
+        const index = queue.indexOf(start);
+        if (index >= 0) queue.splice(index, 1);
+        reject(signal?.reason);
+      };
       const start = () => {
+        signal?.removeEventListener("abort", abort);
         active++;
         // Promise.resolve().then(fn) also catches synchronous throws from fn
         Promise.resolve().then(fn).then(
@@ -63,7 +70,7 @@ export function createLimiter(max: number): Limiter {
         );
       };
       if (active < limit) start();
-      else queue.push(start);
+      else { queue.push(start); signal?.addEventListener("abort", abort, { once: true }); }
     });
   };
 }

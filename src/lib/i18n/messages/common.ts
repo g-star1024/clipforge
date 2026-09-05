@@ -3,6 +3,8 @@ import type { NamespaceMessages } from "../config";
 // common 命名空间：跨页面共享的导航/按钮/状态文案
 export const common: NamespaceMessages = {
   zh: {
+    taskKindTranscript: "文字剪辑 R{revision} · {progress}%",
+    taskKindTranscriptFailed: "文字剪辑 R{revision} 需要重试",
     back: "返回",
     settings: "设置",
     products: "商品库",
@@ -63,6 +65,8 @@ export const common: NamespaceMessages = {
     taskStageCompose: "合成",
   },
   en: {
+    taskKindTranscript: "Text edit R{revision} · {progress}%",
+    taskKindTranscriptFailed: "Text edit R{revision} needs retry",
     back: "Back",
     settings: "Settings",
     products: "Products",

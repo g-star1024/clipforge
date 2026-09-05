@@ -2,9 +2,10 @@ import { and, desc, eq } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 import { apiError, errText } from "@/lib/api-error";
 import { getDb } from "@/lib/db";
-import { compositions, mediaEdits, mediaSources } from "@/lib/db/schema";
+import { mediaEdits, mediaSources } from "@/lib/db/schema";
 import { createTranscriptEditProposal } from "@/lib/transcript-edit-protocol";
-import { startTranscriptRender } from "@/lib/transcript-render-runner";
+import { cancelTranscriptRender, retryTranscriptRender, reconcileTranscriptRenders, publicTranscriptEdit } from "@/lib/transcript-render-runner";
+import { enqueueTranscriptEdits } from "@/lib/transcript-edit-jobs";
 import {
   DEFAULT_TRANSCRIPT_EDIT_PLAN,
   sanitizeTranscriptDocument,
@@ -15,12 +16,8 @@ export const dynamic = "force-dynamic";
 
 const SAFE_ID = /^[a-zA-Z0-9-]+$/;
 
-function aspectRatio(width: number, height: number): "9:16" | "16:9" | "1:1" {
-  const ratio = width / Math.max(1, height);
-  return ratio > 1.2 ? "16:9" : ratio < 0.8 ? "9:16" : "1:1";
-}
-
 function boundedInteger(value: string | null, fallback: number, min: number, max: number): number {
+  if (value === null || !value.trim()) return fallback;
   const parsed = Number(value);
   return Number.isInteger(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
 }
@@ -32,6 +29,7 @@ export async function GET(
   const { id, mediaId } = await params;
   if (!SAFE_ID.test(id) || !SAFE_ID.test(mediaId)) return apiError(req, "无效的素材ID", "Invalid media ID", 400);
   try {
+    reconcileTranscriptRenders(id);
     const db = getDb();
     const [source] = await db.select().from(mediaSources)
       .where(and(eq(mediaSources.id, mediaId), eq(mediaSources.projectId, id))).limit(1);
@@ -81,6 +79,9 @@ export async function GET(
         baseRevision: latest.baseRevision,
         actor: latest.actor,
         status: latest.status,
+        progress: latest.progress,
+        error: latest.error,
+        batchId: latest.batchId,
         summary: latest.summary,
         compositionId: latest.compositionId,
         createdAt: latest.createdAt,
@@ -101,12 +102,20 @@ export async function POST(
   try {
     const body = await req.json() as Record<string, unknown>;
     const action = body.action === undefined ? "apply" : body.action;
-    if (action !== "preview" && action !== "apply") return apiError(req, "不支持的剪辑操作", "Unsupported edit action", 400);
+    if (!["preview", "apply", "cancel", "retry"].includes(String(action))) return apiError(req, "不支持的剪辑操作", "Unsupported edit action", 400);
 
+    reconcileTranscriptRenders(id);
     const db = getDb();
     const [source] = await db.select().from(mediaSources)
       .where(and(eq(mediaSources.id, mediaId), eq(mediaSources.projectId, id))).limit(1);
     if (!source) return apiError(req, "素材不存在", "Media source not found", 404);
+    if (action === "cancel" || action === "retry") {
+      if (typeof body.editId !== "string") return apiError(req, "缺少版本 ID", "Edit ID required", 400);
+      const row = db.select().from(mediaEdits).where(and(eq(mediaEdits.id, body.editId), eq(mediaEdits.sourceId, source.id))).get();
+      if (!row) return apiError(req, "版本不存在", "Edit not found", 404);
+      const edit = action === "cancel" ? cancelTranscriptRender(row.id) : retryTranscriptRender(row.id);
+      return NextResponse.json({ edit: edit ? publicTranscriptEdit(edit) : null }, { status: action === "retry" ? 202 : 200 });
+    }
     const transcript = sanitizeTranscriptDocument(source.transcript, source.duration / 1000);
     if (source.status !== "ready" || !transcript) return apiError(req, "请先完成本地转写", "Complete local transcription first", 409);
 
@@ -132,7 +141,7 @@ export async function POST(
     if (existing) {
       return NextResponse.json({
         idempotent: true,
-        edit: existing,
+        edit: publicTranscriptEdit(existing),
         compositionId: existing.compositionId,
         status: existing.status,
       });
@@ -148,50 +157,12 @@ export async function POST(
       return apiError(req, "已有剪辑版本正在生成，请完成后再试", "Another edit version is rendering", 409);
     }
 
-    const created = db.transaction((tx) => {
-      const transactionLatest = tx.select().from(mediaEdits)
-        .where(eq(mediaEdits.sourceId, source.id)).orderBy(desc(mediaEdits.revision)).limit(1).get();
-      const transactionRevision = transactionLatest?.revision ?? 0;
-      if (transactionRevision !== proposal.latestRevision) throw new Error("EDIT_REVISION_CONFLICT");
-      if (transactionLatest?.status === "queued" || transactionLatest?.status === "rendering") throw new Error("EDIT_BUSY");
-
-      const composition = tx.insert(compositions).values({
-        projectId: id,
-        resolution: Math.min(source.width, source.height) >= 1000 ? "1080p" : "720p",
-        aspectRatio: aspectRatio(source.width, source.height),
-        duration: Math.round(proposal.summary.outputDuration * 1000),
-        ttsEnabled: false,
-        aigcBadge: false,
-        label: `Text edit · R${proposal.nextRevision}`,
-        status: "composing",
-      }).returning().get();
-      const edit = tx.insert(mediaEdits).values({
-        projectId: id,
-        sourceId: source.id,
-        revision: proposal.nextRevision,
-        operationId: proposal.operationId,
-        baseRevision: proposal.baseRevision,
-        actor: proposal.actor,
-        plan: proposal.plan,
-        keepRanges: proposal.keepRanges,
-        summary: proposal.summary,
-        compositionId: composition.id,
-        status: "rendering",
-      }).returning().get();
-      return { composition, edit };
-    });
-
-    startTranscriptRender({
-      editId: created.edit.id,
-      compositionId: created.composition.id,
-      revision: created.edit.revision,
-      source,
-      transcript,
-      plan: proposal.plan,
-      keepRanges: proposal.keepRanges,
-    });
-    return NextResponse.json({ proposal, edit: created.edit, compositionId: created.composition.id, status: "rendering" }, { status: 202 });
+    const [created] = enqueueTranscriptEdits(source, transcript, [{ proposal }]);
+    return NextResponse.json({ proposal, edit: publicTranscriptEdit(created.edit), compositionId: created.composition.id, status: "queued" }, { status: 202 });
   } catch (error) {
+    if (error instanceof Error && ["EDIT_NOT_RETRYABLE", "EDIT_SNAPSHOT_MISSING"].includes(error.message)) return apiError(req, "此版本无法重试，请载入计划重新输出", "Load this version as a draft to render it again", 409);
+    if (error instanceof RangeError && error.message === "INVALID_CAPTION_REPLACEMENTS") return apiError(req, "字幕校对内容无效，请检查后重试", "Invalid caption corrections", 422);
+    if (error instanceof RangeError && error.message === "INVALID_TRANSCRIPT_SOURCE_RANGE") return apiError(req, "保留区间无效或超出原片时长", "Invalid source range or range exceeds source duration", 422);
     if (error instanceof Error && error.message === "EDIT_REVISION_CONFLICT") {
       return apiError(req, "剪辑版本已变化，请重新预演", "The edit revision changed; preview again", 409);
     }

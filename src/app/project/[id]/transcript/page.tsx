@@ -56,10 +56,14 @@ import {
   type TranscriptEditPlan,
 } from "@/lib/transcript-editor";
 import { EditTimeline } from "./_components/edit-timeline";
+import { TranscriptWordEditor } from "./_components/transcript-word-editor";
+import { CaptionCorrections } from "./_components/caption-corrections";
+import { ClipWorkbench } from "./_components/clip-workbench";
 
 interface CompositionResult {
   id: string;
   status: "pending" | "composing" | "done" | "failed";
+  label?: string | null;
   outputUrl?: string | null;
   downloadUrl?: string | null;
 }
@@ -73,7 +77,8 @@ interface MediaEditRow {
   plan: TranscriptEditPlan;
   keepRanges?: TimeRange[];
   summary?: TranscriptEditSummary | null;
-  status: "queued" | "rendering" | "done" | "failed";
+  status: "queued" | "rendering" | "done" | "failed" | "cancelled";
+  progress?: number;
   error?: string | null;
   composition?: CompositionResult | null;
 }
@@ -85,7 +90,7 @@ interface EditHistory {
 }
 
 function clonePlan(plan: TranscriptEditPlan): TranscriptEditPlan {
-  return { ...plan, removedWordIds: [...plan.removedWordIds] };
+  return { ...plan, ...(plan.captionReplacements ? { captionReplacements: plan.captionReplacements.map((entry) => ({ ...entry, wordIds: [...entry.wordIds] })) } : {}), removedWordIds: [...plan.removedWordIds], ...(plan.sourceRange ? { sourceRange: { ...plan.sourceRange } } : {}) };
 }
 
 function createHistory(plan = DEFAULT_TRANSCRIPT_EDIT_PLAN): EditHistory {
@@ -93,10 +98,13 @@ function createHistory(plan = DEFAULT_TRANSCRIPT_EDIT_PLAN): EditHistory {
 }
 
 function samePlan(a: TranscriptEditPlan, b: TranscriptEditPlan): boolean {
-  return a.removeSilence === b.removeSilence
+  return JSON.stringify(a.captionReplacements ?? []) === JSON.stringify(b.captionReplacements ?? [])
+    && a.removeSilence === b.removeSilence
     && a.burnSubtitles === b.burnSubtitles
     && a.silencePaddingMs === b.silencePaddingMs
     && a.wordPaddingMs === b.wordPaddingMs
+    && a.sourceRange?.start === b.sourceRange?.start
+    && a.sourceRange?.end === b.sourceRange?.end
     && a.removedWordIds.length === b.removedWordIds.length
     && a.removedWordIds.every((id, index) => id === b.removedWordIds[index]);
 }
@@ -141,6 +149,7 @@ export default function TranscriptPage() {
   const locale = useLocale();
   const inputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const clipPreviewRef = useRef<TimeRange | null>(null);
   const workerRef = useRef<Worker | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const cancelRequestedRef = useRef(false);
@@ -174,7 +183,7 @@ export default function TranscriptPage() {
       if (!response.ok) throw new Error(data.error || t("loadFailed"));
       const next = data.sources as MediaSourceRow[];
       setSources(next);
-      setSelectedId((current) => current && next.some((source) => source.id === current) ? current : next[0]?.id || "");
+      setSelectedId((current) => current && next.some((source) => source.id === current) ? current : next.find((source) => source.id === new URLSearchParams(window.location.search).get("source"))?.id || next[0]?.id || "");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t("loadFailed"));
     } finally {
@@ -219,6 +228,7 @@ export default function TranscriptPage() {
   const activeWordId = transcript ? findTranscriptWordAtTime(transcript.words, currentTime)?.id ?? null : null;
 
   useEffect(() => {
+    clipPreviewRef.current = null;
     setHistory(createHistory());
     setProposal(null);
     setNotice("");
@@ -232,6 +242,7 @@ export default function TranscriptPage() {
   }, []);
 
   const commitPlan = useCallback((nextPlan: TranscriptEditPlan) => {
+    clipPreviewRef.current = null;
     setHistory((current) => {
       const next = clonePlan(nextPlan);
       if (samePlan(current.present, next)) return current;
@@ -242,6 +253,7 @@ export default function TranscriptPage() {
   }, []);
 
   const undo = useCallback(() => {
+    clipPreviewRef.current = null;
     setHistory((current) => {
       const previous = current.past.at(-1);
       if (!previous) return current;
@@ -256,6 +268,7 @@ export default function TranscriptPage() {
   }, []);
 
   const redo = useCallback(() => {
+    clipPreviewRef.current = null;
     setHistory((current) => {
       const next = current.future[0];
       if (!next) return current;
@@ -483,6 +496,7 @@ export default function TranscriptPage() {
   }
 
   function seekTo(time: number) {
+    clipPreviewRef.current = null;
     const video = videoRef.current;
     if (!video) return;
     const maxTime = transcript?.duration ?? (Number.isFinite(video.duration) ? video.duration : time);
@@ -496,6 +510,17 @@ export default function TranscriptPage() {
   function handleVideoTimeUpdate() {
     const video = videoRef.current;
     if (!video) return;
+    const previewRange = clipPreviewRef.current;
+    if (previewRange) {
+      if (video.currentTime >= previewRange.end) {
+        video.pause();
+        if (video.currentTime > previewRange.end + 0.03) video.currentTime = previewRange.end;
+      } else if (video.currentTime < previewRange.start) {
+        video.currentTime = previewRange.start;
+      }
+      setCurrentTime(video.currentTime);
+      return;
+    }
     if (previewCuts && transcript) {
       const playable = nextPlayableSourceTime(video.currentTime, keepRanges);
       if (playable === null) {
@@ -512,6 +537,16 @@ export default function TranscriptPage() {
       }
     }
     setCurrentTime(video.currentTime);
+  }
+
+  function previewClip(range: TimeRange) {
+    const video = videoRef.current;
+    if (!video) return;
+    clipPreviewRef.current = range;
+    video.currentTime = range.start;
+    setCurrentTime(range.start);
+    video.scrollIntoView({ block: "center" });
+    void video.play().catch(() => setNotice(t("clipsPlayManually")));
   }
 
   function downloadText(fileName: string, mimeType: string, content: string) {
@@ -538,7 +573,7 @@ export default function TranscriptPage() {
       }, null, 2));
       return;
     }
-    const cues = transcriptWordsToCues(transcript, keepRanges);
+    const cues = transcriptWordsToCues(transcript, keepRanges, plan);
     downloadText(`${stem}.${format}`, format === "srt" ? "application/x-subrip" : "text/vtt", format === "srt" ? buildSrt(cues) : buildVtt(cues));
   }
 
@@ -618,6 +653,18 @@ export default function TranscriptPage() {
     } finally {
       setBusy(null);
     }
+  }
+
+  async function controlRender(editId: string, action: "cancel" | "retry") {
+    if (!selected) return;
+    setBusy("render"); setError("");
+    try {
+      const response = await fetch(`/api/project/${id}/media/${selected.id}/edit`, { method: "POST", headers: { "Content-Type": "application/json", "Accept-Language": locale }, body: JSON.stringify({ action, editId }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || t("renderFailed"));
+      await loadSources(true);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : t("renderFailed")); }
+    finally { setBusy(null); }
   }
 
   function loadEditAsDraft(edit: MediaEditRow) {
@@ -708,6 +755,7 @@ export default function TranscriptPage() {
                 <select value={model} disabled={busy === "decode" || busy === "transcribe"} onChange={(event) => setModel(event.target.value as LocalAsrModel)} className="mt-1.5 h-10 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary">
                   <option value={LOCAL_ASR_MODELS[0].id}>{t("modelTiny")}</option>
                   <option value={LOCAL_ASR_MODELS[1].id}>{t("modelBase")}</option>
+                  <option value={LOCAL_ASR_MODELS[2].id}>{t("modelSmall")}</option>
                 </select>
               </label>
               <label className="flex-1 text-xs font-medium text-muted-foreground">{t("language")}
@@ -717,6 +765,7 @@ export default function TranscriptPage() {
               </label>
               {busy === "decode" || busy === "transcribe" ? <Button variant="outline" className="h-11 sm:min-w-36" onClick={() => void cancelTranscription()}><LuCircleStop />{t("cancelTranscribe")}</Button> : <Button className="h-11 sm:min-w-36" disabled={!selected.hasAudio} onClick={() => void startTranscription()}><LuCpu />{selected.checkpoint?.resumable ? t("resumeTranscribe") : transcript ? t("retryTranscribe") : t("startTranscribe")}</Button>}
             </div>
+            {model === LOCAL_ASR_MODELS[2].id && <p className="mt-3 text-xs leading-5 text-muted-foreground">{t("modelSmallHint")}</p>}
             <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <span>{!selected.hasAudio ? t("noAudio") : selected.checkpoint?.resumable ? t("resumeAvailable", { time: formatDuration(selected.checkpoint.processedSeconds) }) : t("transcribeHint")}</span>
               {(device || selected.device) && <span className="rounded-full border border-border px-2 py-0.5 text-[10px] text-foreground">{(device || selected.device) === "webgpu" ? t("deviceWebgpu") : t("deviceWasm")}</span>}
@@ -727,6 +776,16 @@ export default function TranscriptPage() {
         </div>
       </section>
 
+      {transcript && <ClipWorkbench
+        key={selectedId}
+        document={transcript}
+        batch={{ projectId: id, mediaId: selectedId, plan, revision: Math.max(0, ...(selected?.edits.map((edit) => edit.revision) ?? [])), disabled: activeRender || busy !== null, onQueued: () => { void loadSources(true); setNotice(t("batchQueued")); } }}
+        sourceRange={plan.sourceRange}
+        onPreview={previewClip}
+        onSelect={(sourceRange) => { commitPlan({ ...plan, sourceRange }); setNotice(t("clipsApplied")); }}
+        onClear={() => { const next = { ...plan }; delete next.sourceRange; commitPlan(next); }}
+      />}
+
       <section className="grid gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(300px,0.65fr)]">
         <div className="rounded-2xl border border-border/60 bg-card/55 p-4 sm:p-5">
           <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
@@ -736,17 +795,11 @@ export default function TranscriptPage() {
               <Button variant="outline" size="sm" className="h-11 px-3" disabled={!history.past.length} onClick={undo} title={t("undo")} aria-label={t("undo")}><LuUndo2 />{t("undo")}</Button>
               <Button variant="outline" size="sm" className="h-11 px-3" disabled={!history.future.length} onClick={redo} title={t("redo")} aria-label={t("redo")}><LuRedo2 />{t("redo")}</Button>
               <Button variant="outline" size="sm" className="h-11 px-3" disabled={!remainingFillerIds.length} onClick={markFillers} title={remainingFillerIds.length ? t("fillerHint", { n: remainingFillerIds.length }) : t("fillerNone")}><LuWandSparkles />{t("fillers")}{remainingFillerIds.length ? ` · ${remainingFillerIds.length}` : ""}</Button>
-              <Button variant="outline" size="sm" className="h-11 px-3" disabled={!removedIds.length && !removeSilence && burnSubtitles} onClick={resetPlan}><LuRotateCcw />{t("reset")}</Button>
+              <Button variant="outline" size="sm" className="h-11 px-3" disabled={!removedIds.length && !removeSilence && burnSubtitles && !plan.sourceRange && !plan.captionReplacements?.length} onClick={resetPlan}><LuRotateCcw />{t("reset")}</Button>
             </div>}
           </div>
           {transcript && <p className="mb-3 text-[11px] text-muted-foreground">{t("keyboardHint")}</p>}
-          {transcript ? <div className="max-h-[520px] overflow-y-auto rounded-xl border border-border/50 bg-background/30 p-3 leading-8 sm:p-4">
-            {transcript.words.map((word) => {
-              const removed = removedIdSet.has(word.id);
-              const active = word.id === activeWordId;
-              return <button key={word.id} type="button" aria-pressed={removed} title={`${word.start.toFixed(2)}s – ${word.end.toFixed(2)}s`} onClick={() => toggleWord(word.id)} className={`mr-1 rounded px-1.5 py-1 text-left text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary ${removed ? "bg-destructive/12 text-destructive line-through decoration-2" : "hover:bg-primary/10"} ${active ? "ring-2 ring-primary/70" : ""}`}>{word.text}</button>;
-            })}
-          </div> : <div className="flex min-h-48 items-center justify-center rounded-xl border border-dashed border-border text-sm text-muted-foreground">{selected ? t("needTranscript") : t("noSourceHint")}</div>}
+          {transcript ? <><TranscriptWordEditor key={selectedId} document={transcript} plan={plan} activeWordId={activeWordId} onToggle={toggleWord} onSeek={seekTo} /><CaptionCorrections key={`corrections-${selectedId}`} document={transcript} plan={plan} onChange={commitPlan} /></> : <div className="flex min-h-48 items-center justify-center rounded-xl border border-dashed border-border text-sm text-muted-foreground">{selected ? t("needTranscript") : t("noSourceHint")}</div>}
         </div>
 
         <aside className="space-y-5">
@@ -804,9 +857,12 @@ export default function TranscriptPage() {
           <div className="rounded-2xl border border-border/60 bg-card/55 p-4 sm:p-5">
             <h2 className="mb-3 font-semibold">{t("versions")}</h2>
             {selected?.edits.length ? <div className="space-y-2">{selected.edits.map((edit) => <div key={edit.id} className="rounded-xl border border-border/50 bg-background/30 p-3">
-              <div className="flex items-center justify-between gap-2"><span className="flex items-center gap-2 text-sm font-medium">{edit.status === "done" ? <LuCircleCheckBig className="text-emerald-500" /> : edit.status === "failed" ? <span className="h-2 w-2 rounded-full bg-destructive" /> : <LuLoaderCircle className="animate-spin text-primary motion-reduce:animate-none" />}{t("revision", { n: edit.revision })}</span><span className="flex items-center gap-1.5 text-[10px] uppercase text-muted-foreground"><span className="rounded-full border border-border px-1.5 py-0.5 normal-case">{t(`actor_${edit.actor ?? "human"}`)}</span>{edit.status === "done" ? t("done") : edit.status === "failed" ? t("failed") : t("rendering")}</span></div>
+              <div className="flex items-center justify-between gap-2"><span className="flex items-center gap-2 text-sm font-medium">{edit.status === "done" ? <LuCircleCheckBig className="text-emerald-500" /> : (edit.status === "failed" || edit.status === "cancelled") ? <span className="h-2 w-2 rounded-full bg-destructive" /> : <LuLoaderCircle className="animate-spin text-primary motion-reduce:animate-none" />}{t("revision", { n: edit.revision })}</span><span className="flex items-center gap-1.5 text-[10px] uppercase text-muted-foreground"><span className="rounded-full border border-border px-1.5 py-0.5 normal-case">{t(`actor_${edit.actor ?? "human"}`)}</span>{edit.status === "done" ? t("done") : edit.status === "failed" ? t("failed") : edit.status === "cancelled" ? t("renderCancelled") : edit.status === "queued" ? t("renderQueued") : t("rendering")}</span></div>
+              {edit.composition?.label && <p className="mt-2 break-words text-sm font-medium">{edit.composition.label}</p>}
+              {(edit.status === "queued" || edit.status === "rendering") && <div className="mt-3"><div className="mb-1 flex items-center justify-between text-xs"><span>{edit.status === "queued" ? t("renderQueued") : t("rendering")}</span><span>{edit.progress ?? 0}%</span></div><progress aria-label={t("renderProgress")} value={edit.progress ?? 0} max={100} className="h-2 w-full accent-primary" /><Button variant="outline" className="mt-2 min-h-11 w-full" disabled={busy === "render"} onClick={() => void controlRender(edit.id, "cancel")}>{t("renderCancel")}</Button></div>}
+              {(edit.status === "failed" || edit.status === "cancelled") && <Button variant="outline" className="mt-2 min-h-11 w-full" disabled={busy === "render"} onClick={() => void controlRender(edit.id, "retry")}>{t("renderRetry")}</Button>}
               {edit.summary && <p className="mt-2 text-xs text-muted-foreground">{t("reviewSummary", { words: edit.summary.removedWordCount, ranges: edit.summary.removedRangeCount, duration: formatDuration(edit.summary.removedDuration) })}</p>}
-              {edit.error && <p className="mt-2 text-xs text-destructive">{edit.error}</p>}
+              {edit.error && <p className="mt-2 text-xs text-destructive">{edit.error === "RENDER_INTERRUPTED" ? t("renderInterrupted") : edit.error}</p>}
               {edit.composition?.status === "done" && edit.composition.outputUrl && <><video controls preload="metadata" src={edit.composition.outputUrl} className="mt-3 aspect-video w-full rounded-lg bg-black object-contain" /><div className="mt-2 flex flex-wrap gap-2"><a href={edit.composition.downloadUrl || edit.composition.outputUrl} className="inline-flex min-h-9 items-center gap-1 rounded-lg border border-border bg-background px-2.5 text-xs font-medium hover:bg-muted"><LuDownload />{t("download")}</a><Link href={`/project/${id}/export`} className="inline-flex min-h-9 items-center rounded-lg px-2.5 text-xs font-medium text-primary hover:bg-primary/10">{t("openExport")}</Link></div></>}
               <Button variant="ghost" size="sm" className="mt-2 h-10 w-full text-xs" onClick={() => loadEditAsDraft(edit)}><LuRotateCcw />{t("loadDraft")}</Button>
             </div>)}</div> : <p className="text-sm text-muted-foreground">{t("noVersions")}</p>}

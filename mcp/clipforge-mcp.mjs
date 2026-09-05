@@ -134,6 +134,12 @@ const TRANSCRIPT_PLAN_PROP = {
     silencePaddingMs: { type: "number", description: "静音两端保留毫秒，0-1000" },
     wordPaddingMs: { type: "number", description: "删词两端扩展毫秒，0-250" },
     burnSubtitles: { type: "boolean" },
+    captionReplacements: { type: "array", maxItems: 200, description: "字幕词组校对，只影响字幕；同一组词 ID 必须连续且各组不重叠", items: { type: "object", properties: { wordIds: { type: "array", minItems: 1, maxItems: 100, items: { type: "string" } }, text: { type: "string", minLength: 1, maxLength: 240 } }, required: ["wordIds", "text"] } },
+    sourceRange: {
+      type: "object", description: "可选：只保留原片的这个连续区间（秒），区间内仍可删词/去静音；省略则使用完整原片",
+      properties: { start: { type: "number", minimum: 0 }, end: { type: "number", minimum: 0 } },
+      required: ["start", "end"],
+    },
   },
   required: ["version", "removedWordIds", "removeSilence", "silencePaddingMs", "wordPaddingMs", "burnSubtitles"],
 };
@@ -592,6 +598,21 @@ const TOOLS = [
         format: { type: "string", enum: ["srt", "vtt"], description: "字幕格式，默认 srt" },
       },
       required: ["projectId"],
+    },
+  },
+  {
+    name: "clipforge_find_clips",
+    description: "从已转写素材按原话、句末和停顿查找短片段。纯本地只读，不调用模型、不生成视频。返回每段原话、sourceRange、plan 和 latestRevision；可把候选 plan 交给 clipforge_transcript_edit 预演，确认后生成新版本。按字面匹配原话并使用时间规则整理建议。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        projectId: PROJECT_ID_PROP,
+        mediaId: { type: "string", description: "已完成转写的原片 ID" },
+        query: { type: "string", maxLength: 160, description: "可选：匹配原话的关键词或短语" },
+        targetSeconds: { type: "number", minimum: 5, maximum: 120, description: "目标片段时长，默认 30 秒" },
+        limit: { type: "integer", minimum: 1, maximum: 12, description: "最多返回数量，默认 6" },
+      },
+      required: ["projectId", "mediaId"],
     },
   },
   {
@@ -1225,6 +1246,14 @@ async function handleExportSubtitle(args) {
   return ok({ ok: true, projectId, format, subtitle });
 }
 
+async function handleFindClips(args) {
+  const projectId = String(args.projectId || "").trim();
+  const mediaId = String(args.mediaId || "").trim();
+  if (!projectId || !mediaId) throw new Error("projectId 和 mediaId 不能为空");
+  const params = new URLSearchParams({ query: String(args.query ?? ""), targetSeconds: String(args.targetSeconds ?? 30), limit: String(args.limit ?? 6) });
+  return ok(await api(`/api/project/${encodeURIComponent(projectId)}/media/${encodeURIComponent(mediaId)}/clips?${params}`));
+}
+
 async function handleTranscriptInspect(args) {
   const projectId = String(args.projectId || "").trim();
   const mediaId = String(args.mediaId || "").trim();
@@ -1340,6 +1369,7 @@ const HANDLERS = {
   clipforge_contact_sheet: handleContactSheet,
   clipforge_export_subtitle: handleExportSubtitle,
   clipforge_transcript_inspect: handleTranscriptInspect,
+  clipforge_find_clips: handleFindClips,
   clipforge_transcript_edit: handleTranscriptEdit,
   clipforge_timeline_export: handleTimelineExport,
   clipforge_carousel: handleCarousel,
@@ -1347,7 +1377,7 @@ const HANDLERS = {
 
 // ---- Start MCP server ----
 const server = new Server(
-  { name: "clipforge", version: "0.9.1" },
+  { name: "clipforge", version: "0.9.2" },
   { capabilities: { tools: {} } },
 );
 

@@ -1,5 +1,7 @@
 "use client";
 
+import { useModelCatalog } from "@/lib/hooks/use-model-catalog";
+import { ModelCatalogStatus } from "@/components/model-catalog-status";
 import { useState, useEffect } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -324,52 +326,11 @@ export default function SettingsPage() {
 
   // save feedback state
 
-  // available model list (fetched from backend aggregated by enabled providers)
-  const [imageModels, setImageModels] = useState<{ id: string; name: string; provider: string }[]>([]);
-  const [videoModels, setVideoModels] = useState<{ id: string; name: string; provider: string }[]>([]);
-  const [modelsLoading, setModelsLoading] = useState(false);
-
-  // providers that are enabled and have an API key (used to fetch model list)
-  const enabledProviders = Object.entries(providers)
-    .filter(([, p]) => p.enabled && p.apiKey)
-    .map(([name, p]) => ({ name, apiKey: p.apiKey, baseUrl: p.baseUrl }));
-  // use provider name set as dependency to avoid re-fetching on every render
-  const enabledKey = enabledProviders.map((p) => p.name).sort().join(",");
-
-  // fetch available image/video models when enabled providers change
-  useEffect(() => {
-    if (enabledProviders.length === 0) {
-      setImageModels([]);
-      setVideoModels([]);
-      return;
-    }
-    let cancelled = false;
-    setModelsLoading(true);
-    const fetchModels = async (mediaType: "image" | "video") => {
-      const res = await fetch("/api/ai/models", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ providers: enabledProviders, mediaType }),
-      });
-      if (!res.ok) return [];
-      const data = await res.json();
-      return data.models ?? [];
-    };
-    Promise.all([fetchModels("image"), fetchModels("video")])
-      .then(([imgs, vids]) => {
-        if (cancelled) return;
-        setImageModels(imgs);
-        setVideoModels(vids);
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (!cancelled) setModelsLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabledKey]);
+  const enabledProviders = Object.entries(providers).filter(([, p]) => p.enabled && p.apiKey).map(([name, p]) => ({ name, apiKey: p.apiKey, baseUrl: p.baseUrl }));
+  const catalog = useModelCatalog(enabledProviders);
+  const imageModels = catalog.models.filter((model) => model.mediaType === "image");
+  const videoModels = catalog.models.filter((model) => model.mediaType === "video");
+  const modelsLoading = catalog.loading;
 
   // merge user custom models into dropdowns (enabled providers only), so custom models can be selected as default
   const enabledNames = new Set(enabledProviders.map((p) => p.name));
@@ -381,13 +342,13 @@ export default function SettingsPage() {
   const imageIds = imageModelOptions.map((m) => m.id).join(",");
   const videoIds = videoModelOptions.map((m) => m.id).join(",");
   useEffect(() => {
-    if (imageModelOptions.length && !imageModelOptions.some((m) => m.id === defaultImageModel)) {
+    if (imageModelOptions.length && !defaultImageModel) {
       setDefaultImageModel(imageModelOptions[0].id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imageIds]);
   useEffect(() => {
-    if (videoModelOptions.length && !videoModelOptions.some((m) => m.id === defaultVideoModel)) {
+    if (videoModelOptions.length && !defaultVideoModel) {
       setDefaultVideoModel(videoModelOptions[0].id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -964,6 +925,7 @@ export default function SettingsPage() {
               <Card className="glass-card">
                 <CardContent className="p-5">
                   <h3 className="font-semibold text-sm mb-4">{t("imageCardTitle")}</h3>
+                  <ModelCatalogStatus statuses={catalog.statuses.filter((status) => status.mediaType === "image")} pending={catalog.pending} onRetry={catalog.retry} />
                   <div className="grid grid-cols-1 gap-4">
                     {/* default image generation model */}
                     <div className="space-y-1.5">
@@ -1008,6 +970,7 @@ export default function SettingsPage() {
               <Card className="glass-card">
                 <CardContent className="p-5">
                   <h3 className="font-semibold text-sm mb-4">{t("videoCardTitle")}</h3>
+                  <ModelCatalogStatus statuses={catalog.statuses.filter((status) => status.mediaType === "video")} pending={catalog.pending} onRetry={catalog.retry} />
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     {/* default video generation model */}
                     <div className="space-y-1.5">

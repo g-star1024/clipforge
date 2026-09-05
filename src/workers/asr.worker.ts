@@ -33,6 +33,9 @@ async function loadPipeline(model: LocalAsrModel, device: LocalAsrDevice) {
   const key = `${model}:${device}`;
   const cached = pipelines.get(key);
   if (cached) return cached;
+  // Release an old device/model session before allocating another large set of weights.
+  for (const existing of pipelines.values()) await existing.dispose();
+  pipelines.clear();
   const transcriber = await pipeline("automatic-speech-recognition", model, {
     device,
     // Keep the WebGPU encoder in fp32 for broad adapter support while quantizing the much

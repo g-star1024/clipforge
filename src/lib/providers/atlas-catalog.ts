@@ -90,11 +90,12 @@ function toEntry(raw: RawCatalogEntry): AtlasCatalogEntry | undefined {
  */
 export async function fetchAtlasCatalog(
   baseUrl: string,
-  opts?: { apiKey?: string; ttlMs?: number; timeoutMs?: number; fetchImpl?: typeof fetch }
+  opts?: { apiKey?: string; ttlMs?: number; timeoutMs?: number; fetchImpl?: typeof fetch; onStatus?: (status: { source: "live" | "cache" | "stale" | "static"; updatedAt?: string; fallback?: boolean }) => void }
 ): Promise<AtlasCatalogEntry[]> {
   const key = baseUrl.replace(/\/+$/, '')
   const ttl = opts?.ttlMs ?? CATALOG_TTL_MS
   if (catalogCache && catalogCache.key === key && Date.now() - catalogCache.at < ttl) {
+    opts?.onStatus?.({ source: "cache", updatedAt: new Date(catalogCache.at).toISOString() })
     return catalogCache.entries
   }
 
@@ -119,8 +120,10 @@ export async function fetchAtlasCatalog(
       entries,
       byId: new Map(entries.map((e) => [e.model, e])),
     }
+    opts?.onStatus?.({ source: "live", updatedAt: new Date(catalogCache.at).toISOString() })
     return entries
   } catch {
+    opts?.onStatus?.({ source: catalogCache?.key === key ? "stale" : "static", fallback: true, updatedAt: catalogCache?.key === key ? new Date(catalogCache.at).toISOString() : undefined })
     // stale cache beats nothing; otherwise fall back to the static catalog
     return catalogCache?.key === key ? catalogCache.entries : []
   }

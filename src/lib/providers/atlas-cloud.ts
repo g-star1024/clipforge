@@ -495,11 +495,14 @@ export class AtlasCloudProvider extends BaseProvider {
    * Discovery is strictly additive — offline or on any parse failure the static
    * catalog is returned unchanged.
    */
-  async listModels(mediaType?: MediaType): Promise<Model[]> {
+  catalogMetadata?: { source: "static" | "live" | "cache" | "stale"; updatedAt?: string; fallback?: boolean }
+
+  async listModels(mediaType?: MediaType, options?: { refresh?: boolean }): Promise<Model[]> {
+    this.catalogMetadata = { source: "static" }
     let models: Model[] = ATLAS_MODELS.map((m) => ({ ...m, provider: this.name }))
     if (mediaType !== 'image') {
       try {
-        const entries = await fetchAtlasCatalog(this.config.baseUrl, { apiKey: this.config.apiKey })
+        const entries = await fetchAtlasCatalog(this.config.baseUrl, { apiKey: this.config.apiKey, ...(options?.refresh ? { ttlMs: 0 } : {}), onStatus: (status) => { this.catalogMetadata = status } })
         const curatedIds = new Set(ATLAS_MODELS.map((m) => m.id))
         models = models.concat(
           dynamicVideoModels(entries, curatedIds).map((m) => ({ ...m, provider: this.name }))

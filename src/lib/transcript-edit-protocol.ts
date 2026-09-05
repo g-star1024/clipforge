@@ -20,6 +20,9 @@ export interface TranscriptEditDiff {
   restoredWordIds: string[];
   removeSilenceChanged: boolean;
   burnSubtitlesChanged: boolean;
+  sourceRangeChanged: boolean;
+  paddingChanged: boolean;
+  captionReplacementsChanged: boolean;
 }
 
 export interface TranscriptEditSummary {
@@ -30,6 +33,7 @@ export interface TranscriptEditSummary {
   removedRangeCount: number;
   removedSilenceRangeCount: number;
   subtitleCueCount: number;
+  captionCorrectionCount: number;
   removedTextPreview: string;
 }
 
@@ -76,8 +80,8 @@ export function createTranscriptEditProposal(input: {
     ? input.value as Record<string, unknown>
     : {};
   const wordIds = new Set(input.document.words.map((word) => word.id));
-  const basePlan = sanitizeTranscriptEditPlan(input.basePlan ?? DEFAULT_TRANSCRIPT_EDIT_PLAN, wordIds);
-  const plan = sanitizeTranscriptEditPlan(raw.plan, wordIds);
+  const basePlan = sanitizeTranscriptEditPlan(input.basePlan ?? DEFAULT_TRANSCRIPT_EDIT_PLAN, wordIds, input.document.duration);
+  const plan = sanitizeTranscriptEditPlan(raw.plan, wordIds, input.document.duration);
   const baseRevisionValue = Number(raw.baseRevision);
   const baseRevision = Number.isInteger(baseRevisionValue) && baseRevisionValue >= 0
     ? Math.min(baseRevisionValue, 1_000_000_000)
@@ -89,11 +93,15 @@ export function createTranscriptEditProposal(input: {
     restoredWordIds: basePlan.removedWordIds.filter((id) => !nextRemoved.has(id)),
     removeSilenceChanged: plan.removeSilence !== basePlan.removeSilence,
     burnSubtitlesChanged: plan.burnSubtitles !== basePlan.burnSubtitles,
+    sourceRangeChanged: plan.sourceRange?.start !== basePlan.sourceRange?.start || plan.sourceRange?.end !== basePlan.sourceRange?.end,
+    captionReplacementsChanged: JSON.stringify(plan.captionReplacements ?? []) !== JSON.stringify(basePlan.captionReplacements ?? []),
+    paddingChanged: plan.wordPaddingMs !== basePlan.wordPaddingMs || plan.silencePaddingMs !== basePlan.silencePaddingMs,
   };
   const removedRanges = removedRangesForPlan(input.document, plan);
   const keepRanges = keepRangesForPlan(input.document, plan);
   const editedDuration = outputDuration(keepRanges);
-  const removedWords = input.document.words.filter((word) => nextRemoved.has(word.id));
+  const removedWords = input.document.words.filter((word) => nextRemoved.has(word.id)
+    || (plan.sourceRange && (word.end <= plan.sourceRange.start || word.start >= plan.sourceRange.end)));
   const removedTextPreview = removedWords
     .slice(0, 18)
     .map((word) => word.text)
@@ -102,7 +110,10 @@ export function createTranscriptEditProposal(input: {
   const changed = diff.addedWordIds.length > 0
     || diff.restoredWordIds.length > 0
     || diff.removeSilenceChanged
-    || diff.burnSubtitlesChanged;
+    || diff.burnSubtitlesChanged
+    || diff.sourceRangeChanged
+    || diff.paddingChanged
+    || diff.captionReplacementsChanged;
 
   return {
     format: TRANSCRIPT_EDIT_FORMAT,
@@ -120,10 +131,11 @@ export function createTranscriptEditProposal(input: {
       originalDuration: roundSeconds(input.document.duration),
       outputDuration: roundSeconds(editedDuration),
       removedDuration: roundSeconds(Math.max(0, input.document.duration - editedDuration)),
-      removedWordCount: plan.removedWordIds.length,
+      removedWordCount: removedWords.length,
       removedRangeCount: removedRanges.length,
       removedSilenceRangeCount: plan.removeSilence ? input.document.silenceRanges.length : 0,
-      subtitleCueCount: plan.burnSubtitles ? segmentsFromWords(remapKeptWords(input.document, keepRanges)).length : 0,
+      subtitleCueCount: plan.burnSubtitles ? segmentsFromWords(remapKeptWords(input.document, keepRanges, plan)).length : 0,
+      captionCorrectionCount: plan.captionReplacements?.length ?? 0,
       removedTextPreview,
     },
   };

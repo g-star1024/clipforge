@@ -1,3 +1,4 @@
+import { applyCaptionReplacements, validateCaptionReplacements, type CaptionReplacement } from "@/lib/transcript-corrections";
 import type { KaraokeLine, KaraokeWord } from "@/lib/video-composer/karaoke";
 import type { SubtitleCue } from "@/lib/subtitle-export";
 
@@ -37,6 +38,10 @@ export interface TranscriptEditPlan {
   silencePaddingMs: number;
   wordPaddingMs: number;
   burnSubtitles: boolean;
+  /** Optional source-time crop, in seconds. Word/silence edits apply inside it. */
+  sourceRange?: TimeRange;
+  /** Versioned subtitle-only phrase corrections. Original timing and transcript stay intact. */
+  captionReplacements?: CaptionReplacement[];
 }
 
 export const DEFAULT_TRANSCRIPT_EDIT_PLAN: TranscriptEditPlan = {
@@ -142,7 +147,17 @@ export function segmentsFromWords(words: TranscriptWord[]): TranscriptSegment[] 
   return segments;
 }
 
-export function sanitizeTranscriptEditPlan(value: unknown, wordIds: Set<string>): TranscriptEditPlan {
+export function validateTranscriptSourceRange(value: unknown, duration = Number.POSITIVE_INFINITY): TimeRange {
+  const range = value as Partial<TimeRange> | null;
+  if (!range || typeof range.start !== "number" || typeof range.end !== "number"
+    || !Number.isFinite(range.start) || !Number.isFinite(range.end)
+    || range.start < 0 || range.end > duration || range.end - range.start < 0.04) {
+    throw new RangeError("INVALID_TRANSCRIPT_SOURCE_RANGE");
+  }
+  return { start: range.start, end: range.end };
+}
+
+export function sanitizeTranscriptEditPlan(value: unknown, wordIds: Set<string>, duration = Number.POSITIVE_INFINITY): TranscriptEditPlan {
   const raw = value && typeof value === "object" ? value as Partial<TranscriptEditPlan> : {};
   const removed = Array.isArray(raw.removedWordIds)
     ? [...new Set(raw.removedWordIds.filter((id): id is string => typeof id === "string" && wordIds.has(id)))]
@@ -154,6 +169,8 @@ export function sanitizeTranscriptEditPlan(value: unknown, wordIds: Set<string>)
     silencePaddingMs: clamp(Math.round(finite(raw.silencePaddingMs, DEFAULT_TRANSCRIPT_EDIT_PLAN.silencePaddingMs)), 0, 1000),
     wordPaddingMs: clamp(Math.round(finite(raw.wordPaddingMs, DEFAULT_TRANSCRIPT_EDIT_PLAN.wordPaddingMs)), 0, 250),
     burnSubtitles: raw.burnSubtitles !== false,
+    ...(raw.captionReplacements !== undefined ? { captionReplacements: validateCaptionReplacements(raw.captionReplacements, wordIds) } : {}),
+    ...(raw.sourceRange !== undefined ? { sourceRange: validateTranscriptSourceRange(raw.sourceRange, duration) } : {}),
   };
 }
 
@@ -163,6 +180,10 @@ export function removedRangesForPlan(document: TranscriptDocument, plan: Transcr
   const ranges = document.words
     .filter((word) => removedIds.has(word.id))
     .map((word) => ({ start: Math.max(0, word.start - wordPadding), end: Math.min(document.duration, word.end + wordPadding) }));
+  if (plan.sourceRange) {
+    const range = validateTranscriptSourceRange(plan.sourceRange, document.duration);
+    ranges.push({ start: 0, end: range.start }, { start: range.end, end: document.duration });
+  }
   if (plan.removeSilence) {
     const silencePadding = plan.silencePaddingMs / 1000;
     for (const silence of document.silenceRanges) {
@@ -189,7 +210,12 @@ export function subtractTimeRanges(duration: number, removed: TimeRange[]): Time
 }
 
 export function keepRangesForPlan(document: TranscriptDocument, plan: TranscriptEditPlan): TimeRange[] {
-  return subtractTimeRanges(document.duration, removedRangesForPlan(document, plan));
+  const kept = subtractTimeRanges(document.duration, removedRangesForPlan(document, plan));
+  // Enforce exact crop edges even when the range normalizer drops tiny exclusions.
+  return plan.sourceRange ? kept.map((range) => ({
+    start: Math.max(range.start, plan.sourceRange!.start),
+    end: Math.min(range.end, plan.sourceRange!.end),
+  })).filter((range) => range.end - range.start >= 0.04) : kept;
 }
 
 export function outputDuration(kept: TimeRange[]): number {
@@ -207,7 +233,7 @@ export function sourceTimeToOutputTime(time: number, kept: TimeRange[]): number 
   return null;
 }
 
-export function remapKeptWords(document: TranscriptDocument, kept: TimeRange[]): TranscriptWord[] {
+export function remapKeptWords(document: TranscriptDocument, kept: TimeRange[], plan?: TranscriptEditPlan): TranscriptWord[] {
   const out: TranscriptWord[] = [];
   for (const word of document.words) {
     const start = sourceTimeToOutputTime(word.start, kept);
@@ -215,7 +241,13 @@ export function remapKeptWords(document: TranscriptDocument, kept: TimeRange[]):
     if (start === null || end === null || end <= start) continue;
     out.push({ ...word, start, end });
   }
-  return out;
+  const byId = new Map(document.words.map((word) => [word.id, word]));
+  const applicable = plan?.captionReplacements?.filter((replacement) => {
+    const first = byId.get(replacement.wordIds[0]);
+    const last = byId.get(replacement.wordIds.at(-1)!);
+    return first && last && kept.some((range) => first.start >= range.start && last.end <= range.end);
+  });
+  return applyCaptionReplacements(out, applicable);
 }
 
 export function outputTimeToSourceTime(time: number, kept: TimeRange[]): number | null {
@@ -272,8 +304,8 @@ export function detectFillerWordIds(document: TranscriptDocument): string[] {
     .map((word) => word.id);
 }
 
-export function transcriptWordsToCues(document: TranscriptDocument, kept: TimeRange[]): SubtitleCue[] {
-  return segmentsFromWords(remapKeptWords(document, kept)).map((segment, index) => ({
+export function transcriptWordsToCues(document: TranscriptDocument, kept: TimeRange[], plan?: TranscriptEditPlan): SubtitleCue[] {
+  return segmentsFromWords(remapKeptWords(document, kept, plan)).map((segment, index) => ({
     index: index + 1,
     startMs: Math.round(segment.start * 1000),
     endMs: Math.max(Math.round(segment.start * 1000) + 1, Math.round(segment.end * 1000)),

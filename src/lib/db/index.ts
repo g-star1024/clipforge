@@ -85,7 +85,7 @@ if (realDb && process.env.NEXT_PHASE !== "phase-production-build") {
     const staleCutoff = Math.floor(Date.now() / 1000) - 15 * 60;
     const swept = sqlite!
       .prepare(
-        "UPDATE compositions SET status = 'failed' WHERE status IN ('composing', 'pending') AND created_at < ?"
+        "UPDATE compositions SET status = 'failed' WHERE status IN ('composing', 'pending') AND created_at < ? AND id NOT IN (SELECT composition_id FROM media_edits WHERE status IN ('queued', 'rendering') AND composition_id IS NOT NULL)"
       )
       .run(staleCutoff);
     if (swept.changes > 0) {

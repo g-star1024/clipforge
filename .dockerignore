@@ -18,3 +18,8 @@ electron/dist
 coverage
 .vscode
 .idea
+
+# Local work records
+/task_plan.md
+/findings.md
+/progress.md

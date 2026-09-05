@@ -51,3 +51,8 @@ AGENTS.md
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Local work records
+/task_plan.md
+/findings.md
+/progress.md

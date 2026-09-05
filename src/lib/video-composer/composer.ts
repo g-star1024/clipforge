@@ -6,7 +6,7 @@ import { existsSync } from "fs";
 import { TRANSITIONS, type TransitionMode } from "./transitions";
 import { MOTIONS, DEFAULT_MOTION } from "./motions";
 import { safeEncodeParams } from "@/lib/compose-presets";
-import { createLimiter } from "@/lib/concurrency";
+import { createLimiter, type Limiter } from "@/lib/concurrency";
 import { buildAigcMetadataArgs, buildAigcMetadataArgv } from "@/lib/compliance-metadata";
 import { CAPTION_SAFE_BOTTOM_RATIO, CAPTION_SAFE_BOTTOM_RATIO_NOCARD } from "./safe-zone";
 import { VOICE_GROUND_CHAIN, roomToneSource } from "./voice-ground";
@@ -907,11 +907,12 @@ export function resolveComposeMaxConcurrency(raw = process.env.COMPOSE_MAX_CONCU
 // Module-level render gate: N concurrent compose requests used to spawn N parallel ffmpeg
 // processes (each up to 10 min), starving CPU so every render slowed down and collectively
 // timed out. Excess renders now queue in FIFO order instead of stampeding.
-const composeLimiter = createLimiter(resolveComposeMaxConcurrency());
+const renderRegistry = globalThis as typeof globalThis & { clipforgeComposeLimiter?: Limiter };
+const composeLimiter = renderRegistry.clipforgeComposeLimiter ??= createLimiter(resolveComposeMaxConcurrency());
 
 /** Share the same expensive-render gate with adjacent local editors so independent FFmpeg jobs cannot stampede the machine. */
-export function withComposeSlot<T>(fn: () => Promise<T> | T): Promise<T> {
-  return composeLimiter(fn);
+export function withComposeSlot<T>(fn: () => Promise<T> | T, signal?: AbortSignal): Promise<T> {
+  return composeLimiter(fn, signal);
 }
 
 /** Classify low-level ffmpeg composition errors into actionable messages (pure function, unit-testable); returns null for unknown error types (to be rethrown as-is) */

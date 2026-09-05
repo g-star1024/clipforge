@@ -4,8 +4,8 @@ import { apiError } from "@/lib/api-error";
 import { parseRangeHeader } from "@/lib/http-range";
 import { stat } from "fs/promises";
 import { join, normalize, sep } from "path";
-import { createReadStream, existsSync } from "fs";
-import { Readable } from "stream";
+import { existsSync } from "fs";
+import { fileResponseStream } from "@/lib/file-response-stream";
 
 // Static file server - serves uploaded images/videos.
 // Streams from disk (no whole-file buffering) and supports single-range HTTP Range requests (206),
@@ -72,9 +72,7 @@ export async function GET(
 
   if (range) {
     // Partial content: stream only the requested byte window
-    const stream = Readable.toWeb(
-      createReadStream(filePath, { start: range.start, end: range.end })
-    ) as ReadableStream;
+    const stream = fileResponseStream(filePath, range);
     return new NextResponse(stream, {
       status: 206,
       headers: {
@@ -86,7 +84,7 @@ export async function GET(
   }
 
   // Full content: still stream from disk instead of buffering the whole file in memory
-  const stream = Readable.toWeb(createReadStream(filePath)) as ReadableStream;
+  const stream = fileResponseStream(filePath);
   return new NextResponse(stream, {
     headers: {
       ...baseHeaders,

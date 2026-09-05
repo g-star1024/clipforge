@@ -13,6 +13,8 @@ import { validateOrDelete } from "@/lib/media-validate";
 import { fileNameOf, getUploadsDir } from "@/lib/paths";
 import { publicMediaComposition, publicMediaSource } from "@/lib/public-media-source";
 
+import { reconcileTranscriptRenders, publicTranscriptEdit } from "@/lib/transcript-render-runner";
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -41,11 +43,12 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   const { id } = await params;
   if (!SAFE_ID.test(id)) return apiError(req, "无效的项目ID", "Invalid project ID", 400);
   try {
+    reconcileTranscriptRenders(id);
     const db = getDb();
     const [project, sourceRows, edits, projectCompositions] = await Promise.all([
       db.select({ id: projects.id }).from(projects).where(eq(projects.id, id)).limit(1),
       db.select().from(mediaSources).where(eq(mediaSources.projectId, id)).orderBy(desc(mediaSources.createdAt)),
-      db.select().from(mediaEdits).where(eq(mediaEdits.projectId, id)).orderBy(desc(mediaEdits.createdAt)),
+      db.select().from(mediaEdits).where(eq(mediaEdits.projectId, id)).orderBy(desc(mediaEdits.createdAt), desc(mediaEdits.revision)),
       db.select().from(compositions).where(eq(compositions.projectId, id)).orderBy(desc(compositions.createdAt)),
     ]);
     if (!project[0]) return apiError(req, "项目不存在", "Project not found", 404);
@@ -67,7 +70,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
             const composition = edit.compositionId ? compositionById.get(edit.compositionId) ?? null : null;
             const outputName = composition?.outputPath ? fileNameOf(composition.outputPath) : null;
             return {
-              ...edit,
+              ...publicTranscriptEdit(edit),
               composition: composition ? publicMediaComposition(composition, {
                 outputUrl: outputName ? `/api/output/${id}/${outputName}` : null,
                 downloadUrl: outputName ? `/api/output/${id}/${outputName}?download=1` : null,

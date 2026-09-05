@@ -12,6 +12,9 @@ import {
 
 interface TaskRow {
   kind: string;
+  progress?: number;
+  revision?: number;
+  sourceId?: string;
   id: string;
   projectId?: string | null;
   projectName?: string;
@@ -36,6 +39,9 @@ const POLL_MS = 15_000;
 /** Where clicking a task row lands: the page that shows (or fixes) that task. */
 function hrefFor(row: TaskRow): string {
   switch (row.kind) {
+    case "transcript":
+    case "transcript_failed":
+      return `/project/${row.projectId}/transcript?source=${row.sourceId}`;
     case "batch":
       return "/batch";
     case "paid":
@@ -91,6 +97,10 @@ export function TaskCenter({ collapsed = false }: { collapsed?: boolean }) {
 
   const rowTitle = (row: TaskRow): string => {
     switch (row.kind) {
+      case "transcript":
+        return t("taskKindTranscript", { revision: row.revision ?? 0, progress: row.progress ?? 0 });
+      case "transcript_failed":
+        return t("taskKindTranscriptFailed", { revision: row.revision ?? 0 });
       case "pipeline":
         return t("taskKindPipeline", {
           stage: t(row.stage === "judge" ? "taskStageJudge" : row.stage === "stock_fill" ? "taskStageAssets" : "taskStageCompose"),

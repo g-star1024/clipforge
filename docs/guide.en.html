@@ -200,10 +200,12 @@ cd clipforge &amp;&amp; pnpm install &amp;&amp; pnpm dev</code></pre>
 </ol>
 <div class="tip"><p><b>Accepted means active:</b> the take you accept becomes that shot's real compose input; older takes remain available for comparison or rollback. Once enough project-local reviews exist, their observed results inform model routing. Regeneration and model switching remain suggestions and never spend automatically.</p></div>
 
-<h2 id="text-edit">6C. Edit long-form footage by text (v0.8.97)</h2>
+<h2 id="text-edit">6C. Clip workbench and batch text editing (v0.9.2)</h2>
 <ol>
   <li>Open a project's Assets page, choose <b>Edit by text</b>, and import MP4 / MOV / WebM / MKV / M4V footage up to 1 GB.</li>
-  <li>Choose Tiny for speed or Base for accuracy, then transcribe locally. Sources up to two hours are processed in fixed five-minute chunks, keeping memory bounded; cancel at any time and resume from the latest checkpoint while the earlier transcript remains usable until the new one finishes. The model is cached after its first download; WebGPU is preferred and compatibility mode is automatic.</li>
+  <li>Choose Tiny for a lightweight start, Base for balance, or experimental Small, then transcribe locally. Sources up to two hours are processed in fixed five-minute chunks, keeping memory bounded; cancel at any time and resume from the latest checkpoint while the earlier transcript remains usable until the new one finishes. The model is cached after its first download; WebGPU is preferred and compatibility mode is automatic.</li>
+  <li><b>Clip workbench:</b> find spoken phrases and target durations, preview the source, then select a range or enter one manually. Long transcripts use bounded sections with full-text search and playback location. Caption corrections preserve original timing and are saved with the edit version.</li>
+  <li><b>Batch export:</b> name up to 12 selected clips, preview their durations, then queue them together. Track progress, cancel individual renders, and retry saved plans after interruption from the version cards or task center.</li>
   <li>Click words to keep or remove them, or batch-mark fillers and silence. Playback skips removed ranges immediately; the timeline, duration estimate, undo, and redo update live.</li>
   <li>Choose <b>Review changes</b> to inspect removed words, ranges, and duration before confirming a new version. SRT / VTT / JSON cover captions and the edit plan; OTIO preserves editable A/V clips, EDL supports traditional NLE handoff, and CSV carries source/record timecodes plus transcript notes for review. MCP and CLI expose the same exports.</li>
 </ol>

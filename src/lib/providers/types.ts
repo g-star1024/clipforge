@@ -210,6 +210,7 @@ export interface TaskStatus {
 
 /** AI Provider unified interface */
 export interface AIProvider {
+  catalogMetadata?: { source: "static" | "live" | "cache" | "stale"; updatedAt?: string; fallback?: boolean };
   /** Platform identifier name */
   readonly name: string
 
@@ -267,7 +268,7 @@ export interface AIProvider {
    * @param mediaType Optional media type filter
    * @returns List of models
    */
-  listModels(mediaType?: MediaType): Promise<Model[]>
+  listModels(mediaType?: MediaType, options?: { refresh?: boolean }): Promise<Model[]>
 }
 
 // ==================== factory types ====================

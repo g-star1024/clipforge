@@ -1,8 +1,6 @@
-import { execFile } from "child_process";
 import { mkdir, rm, writeFile } from "fs/promises";
 import { dirname, join } from "path";
-import { promisify } from "util";
-import { ffmpegBin } from "@/lib/ffmpeg-path";
+import { runTranscriptFfmpeg } from "@/lib/transcript-render-process";
 import { getOutputDir } from "@/lib/paths";
 import {
   karaokeLinesFromWords,
@@ -21,7 +19,7 @@ import {
 import { buildKaraokeAss } from "@/lib/video-composer/karaoke";
 import { validateMediaFile } from "@/lib/media-validate";
 
-const execFileAsync = promisify(execFile);
+
 export const TRANSCRIPT_RENDER_TIMEOUT_MS = 15 * 60 * 1000;
 
 export interface TranscriptRenderInvocation {
@@ -38,17 +36,21 @@ export interface BuildTranscriptRenderInput {
   subtitlePath?: string;
   fontDirectory?: string;
   duration: number;
+  /** Disable only for non-seekable inputs or regression comparisons. */
+  seekInput?: boolean;
 }
 
 export function buildTranscriptRenderInvocation(input: BuildTranscriptRenderInput): TranscriptRenderInvocation {
   if (!input.keepRanges.length) throw new Error("没有可输出的视频片段");
+  const seek = input.seekInput === false ? 0 : Math.max(0, Math.min(...input.keepRanges.map((range) => range.start)) - 0.25);
+  const decodeDuration = Math.max(...input.keepRanges.map((range) => range.end)) - seek + 0.25;
   const filters: string[] = [];
   const videoStreams: string[] = [];
   const audioStreams: string[] = [];
 
   input.keepRanges.forEach((range, index) => {
-    const start = range.start.toFixed(3);
-    const end = range.end.toFixed(3);
+    const start = (range.start - seek).toFixed(3);
+    const end = (range.end - seek).toFixed(3);
     filters.push(`[0:v:0]trim=start=${start}:end=${end},setpts=PTS-STARTPTS[v${index}]`);
     videoStreams.push(`[v${index}]`);
     if (input.hasAudio) {
@@ -80,7 +82,7 @@ export function buildTranscriptRenderInvocation(input: BuildTranscriptRenderInpu
   }
 
   return {
-    inputArgs: ["-nostdin", "-v", "error", "-y", "-i", input.inputPath],
+    inputArgs: ["-nostdin", "-v", "error", "-y", ...(seek > 0 ? ["-ss", seek.toFixed(3)] : []), "-t", decodeDuration.toFixed(3), "-i", input.inputPath],
     filterComplex: filters.join(";\n"),
     outputArgs: [
       "-map", "[vout]",
@@ -104,6 +106,9 @@ export interface RenderTranscriptEditInput {
   plan: TranscriptEditPlan;
   keepRanges: TimeRange[];
   outputPath: string;
+  signal?: AbortSignal;
+  onStart?: () => void;
+  onProgress?: (progress: number) => void;
 }
 
 export async function renderTranscriptEdit(input: RenderTranscriptEditInput): Promise<string> {
@@ -118,7 +123,7 @@ export async function renderTranscriptEdit(input: RenderTranscriptEditInput): Pr
   const filterPath = join(getOutputDir(), input.projectId, `transcript-filter-${token}.txt`);
   let subtitlePath: string | undefined;
   if (input.plan.burnSubtitles) {
-    const words = remapKeptWords(input.transcript, input.keepRanges);
+    const words = remapKeptWords(input.transcript, input.keepRanges, input.plan);
     const lines = karaokeLinesFromWords(words);
     if (lines.length) {
       subtitlePath = join(getOutputDir(), input.projectId, `transcript-subtitles-${token}.ass`);
@@ -148,7 +153,12 @@ export async function renderTranscriptEdit(input: RenderTranscriptEditInput): Pr
   await writeFile(filterPath, invocation.filterComplex, "utf8");
   const args = [...invocation.inputArgs, "-filter_complex_script", filterPath, ...invocation.outputArgs];
   try {
-    await withComposeSlot(() => execFileAsync(ffmpegBin(), args, { timeout: TRANSCRIPT_RENDER_TIMEOUT_MS, maxBuffer: 50 * 1024 * 1024 }));
+    await withComposeSlot(() => {
+      input.signal?.throwIfAborted();
+      input.onStart?.();
+      return runTranscriptFfmpeg(args, { duration, timeoutMs: TRANSCRIPT_RENDER_TIMEOUT_MS, signal: input.signal, onProgress: input.onProgress });
+    }, input.signal);
+    input.signal?.throwIfAborted();
     if (!(await validateMediaFile(input.outputPath, "video"))) throw new Error("剪辑结果校验失败，请重试");
     return input.outputPath;
   } catch (error) {

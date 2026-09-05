@@ -1,50 +1,35 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createProvider } from "@/lib/providers";
-import type { MediaType, Model } from "@/lib/providers/types";
+import type { CatalogProvider, ModelCatalogStatus } from "@/lib/model-catalog";
+import type { Model } from "@/lib/providers/types";
 
-/**
- * Aggregates the available model list from all enabled providers.
- * Used by the frontend (settings page default model selector, asset/video generation entry points)
- * to fetch and display selectable models.
- *
- * Request body:
- *   { providers: [{ name, apiKey?, baseUrl? }], mediaType?: 'image' | 'video' }
- * Response:
- *   { models: Model[] }  // aggregated by provider
- */
 export async function POST(req: NextRequest) {
-  const body = await req.json();
-  const providers = (body.providers ?? []) as Array<{
-    name: string;
-    apiKey?: string;
-    baseUrl?: string;
-  }>;
-  const mediaType = body.mediaType as MediaType | undefined;
-
-  if (!Array.isArray(providers) || providers.length === 0) {
-    return NextResponse.json({ models: [] });
+  let body;
+  try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON" }, { status: 400 }); }
+  const providers = body?.providers ?? [];
+  const mediaType = body?.mediaType;
+  if (!Array.isArray(providers) || providers.length > 16 || (mediaType !== undefined && mediaType !== "image" && mediaType !== "video") || providers.some((p) => !p || typeof p.name !== "string" || !/^[a-z0-9-]{1,64}$/.test(p.name) || (p.apiKey !== undefined && (typeof p.apiKey !== "string" || p.apiKey.length > 4096)) || (p.baseUrl !== undefined && (typeof p.baseUrl !== "string" || p.baseUrl.length > 2048)))) {
+    return NextResponse.json({ error: "Invalid catalog request" }, { status: 400 });
   }
-
-  // Fetch each provider's model list concurrently; a failure from one provider does not affect the others
-  const results = await Promise.allSettled(
-    providers.map(async (p) => {
-      const provider = createProvider({
-        name: p.name,
-        apiKey: p.apiKey ?? "",
-        baseUrl: p.baseUrl ?? "",
-      });
-      return provider.listModels(mediaType);
-    })
-  );
-
-  const models: Model[] = [];
-  results.forEach((r, i) => {
-    if (r.status === "fulfilled") {
-      models.push(...r.value);
-    } else {
-      console.warn(`获取 ${providers[i]?.name} 模型列表失败:`, r.reason);
-    }
-  });
-
-  return NextResponse.json({ models });
+  const types: ("image" | "video")[] = mediaType ? [mediaType] : ["image", "video"];
+  const unique = [...new Map((providers as CatalogProvider[]).map((p) => [p.name, p])).values()];
+  const results = await Promise.all(unique.flatMap((p) => types.map(async (type) => {
+    const started = Date.now();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const provider = createProvider({ name: p.name, apiKey: p.apiKey ?? "", baseUrl: p.baseUrl ?? "", timeout: 10_000 });
+      const models = await Promise.race([
+        provider.listModels(type, { refresh: body.refresh === true }),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("CATALOG_TIMEOUT")), 12_000); }),
+      ]);
+      const metadata = provider.catalogMetadata;
+      const status: ModelCatalogStatus = { provider: p.name, mediaType: type, status: metadata?.fallback ? "fallback" : models.length ? "ready" : "empty", checkedAt: new Date().toISOString(), durationMs: Date.now() - started, count: models.length, source: metadata?.source ?? "static", catalogUpdatedAt: metadata?.updatedAt, ...(metadata?.fallback ? { errorCode: "CATALOG_UNAVAILABLE" as const } : {}) };
+      return { models, status };
+    } catch (error) {
+      // Raw upstream errors can contain request URLs or credentials. Return only a stable code.
+      const status: ModelCatalogStatus = { provider: p.name, mediaType: type, status: "error", checkedAt: new Date().toISOString(), durationMs: Date.now() - started, count: 0, errorCode: error instanceof Error && error.message === "CATALOG_TIMEOUT" ? "CATALOG_TIMEOUT" : "CATALOG_UNAVAILABLE" };
+      return { models: [] as Model[], status };
+    } finally { if (timer) clearTimeout(timer); }
+  })));
+  return NextResponse.json({ models: results.flatMap((result) => result.models), providers: results.map((result) => result.status) }, { headers: { "Cache-Control": "no-store" } });
 }

@@ -606,6 +606,14 @@ async function cmdGet(flags) {
   return { ok: true, projectId, status: composition.status, videoUrl: absVideoUrl(composition) };
 }
 
+async function cmdClips(flags) {
+  const projectId = String(flags.project || "").trim();
+  const mediaId = String(flags.media || "").trim();
+  if (!projectId || !mediaId) throw new Error("--project 和 --media 不能为空");
+  const params = new URLSearchParams({ query: String(flags.query ?? ""), targetSeconds: String(flags.seconds ?? 30), limit: String(flags.limit ?? 6) });
+  return api(`/api/project/${encodeURIComponent(projectId)}/media/${encodeURIComponent(mediaId)}/clips?${params}`);
+}
+
 async function cmdTranscriptInspect(flags) {
   const projectId = String(flags.project || "").trim();
   const mediaId = String(flags.media || "").trim();
@@ -729,6 +737,7 @@ const HELP = `ClipForge CLI · 命令行一句话出片
   clipforge sheet --project <id> [--frames 8 --proxy --mode smart|even]   成片速览一张图(scene感知抽帧+拼接点标注+波形;--proxy 出720p时间码审片小样)
   clipforge carousel --project <id> [--theme night|warm|mint|mono|rose]   生成小红书图文卡片(标题+逐条要点)
   clipforge transcript --project <id> --media <id> [--offset 0 --limit 500]   分页检查逐字稿、latestRevision 和当前计划
+  clipforge clips --project <id> --media <id> [--query 关键词 --seconds 30 --limit 6]   本地片段建议(只读)，返回原话、时间范围和可预演 plan
   clipforge transcript-edit --project <id> --media <id> --plan edit-plan.json [--revision 0 --operation <id> --apply]
                                 默认只预演 diff；用户确认后加 --apply，重试必须复用 operation ID
   clipforge timeline --project <id> --media <id> --plan edit-plan.json [--format otio|edl|csv --out edit.otio]
@@ -743,7 +752,7 @@ const HELP = `ClipForge CLI · 命令行一句话出片
 
 进度打印到 stderr，最终结果（含 videoUrl）打印到 stdout，便于管道取值。`;
 
-const COMMANDS = { create: cmdCreate, product: cmdProduct, import: cmdImport, dub: cmdDub, compose: cmdCompose, cover: cmdCover, qr: cmdQr, endcard: cmdEndcard, export: cmdExport, qc: cmdQc, master: cmdMaster, gate: cmdGate, credits: cmdCredits, native: cmdNative, preview: cmdPreview, sheet: cmdSheet, carousel: cmdCarousel, transcript: cmdTranscriptInspect, "transcript-edit": cmdTranscriptEdit, timeline: cmdTimelineExport, list: cmdList, voices: cmdVoices, get: cmdGet, trends: cmdTrends };
+const COMMANDS = { create: cmdCreate, product: cmdProduct, import: cmdImport, dub: cmdDub, compose: cmdCompose, cover: cmdCover, qr: cmdQr, endcard: cmdEndcard, export: cmdExport, qc: cmdQc, master: cmdMaster, gate: cmdGate, credits: cmdCredits, native: cmdNative, preview: cmdPreview, sheet: cmdSheet, carousel: cmdCarousel, clips: cmdClips, transcript: cmdTranscriptInspect, "transcript-edit": cmdTranscriptEdit, timeline: cmdTimelineExport, list: cmdList, voices: cmdVoices, get: cmdGet, trends: cmdTrends };
 
 async function main() {
   const { _, flags } = parseArgs(process.argv.slice(2));

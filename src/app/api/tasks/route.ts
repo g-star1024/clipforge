@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { and, desc, eq, gt, inArray } from "drizzle-orm";
+import { reconcileTranscriptRenders } from "@/lib/transcript-render-runner";
 import { getDb } from "@/lib/db";
-import { aiTasks, batchJobItems, batchJobs, compositions, pipelineRuns, projects } from "@/lib/db/schema";
+import { aiTasks, batchJobItems, batchJobs, compositions, mediaEdits, pipelineRuns, projects } from "@/lib/db/schema";
 import { isPipelineRunActive } from "@/lib/pipeline-runner";
 import { ACTIVE_AI_TASK_STATUSES } from "@/lib/ai-tasks";
 
@@ -19,6 +20,7 @@ import { ACTIVE_AI_TASK_STATUSES } from "@/lib/ai-tasks";
  */
 export async function GET() {
   try {
+    reconcileTranscriptRenders();
     const db = getDb();
     const projectName = new Map<string, string>();
     for (const p of await db.select({ id: projects.id, name: projects.name }).from(projects)) {
@@ -59,10 +61,16 @@ export async function GET() {
       }
     }
 
+    const transcriptRows = await db.select().from(mediaEdits).where(inArray(mediaEdits.status, ["queued", "rendering", "failed"])).orderBy(desc(mediaEdits.createdAt));
+    const transcriptComposeIds = new Set(transcriptRows.map((edit) => edit.compositionId));
+    for (const edit of transcriptRows) {
+      (edit.status === "failed" ? attention : active).push({ kind: edit.status === "failed" ? "transcript_failed" : "transcript", id: edit.id, projectId: edit.projectId, projectName: projectName.get(edit.projectId) ?? "", sourceId: edit.sourceId, revision: edit.revision, progress: edit.progress, status: edit.status, createdAt: edit.createdAt });
+    }
+
     // renders in flight (skip ones already represented by their pipeline row)
     const composing = await db.select().from(compositions).where(eq(compositions.status, "composing"));
     for (const c of composing) {
-      if (pipelineComposeIds.has(c.id)) continue;
+      if (pipelineComposeIds.has(c.id) || transcriptComposeIds.has(c.id)) continue;
       active.push({
         kind: "compose",
         id: c.id,

@@ -95,3 +95,17 @@ describe("createLimiter", () => {
     }
   });
 });
+
+describe("cancellable render queue", () => {
+  it("removes cancelled queued work without consuming a slot", async () => {
+    const run = createLimiter(1); const first = gate(); const started: string[] = [];
+    const running = run(() => first.p);
+    const controller = new AbortController();
+    const cancelled = run(() => { started.push("cancelled"); }, controller.signal);
+    const rejection = expect(cancelled).rejects.toThrow("stop");
+    const next = run(() => { started.push("next"); });
+    controller.abort(new Error("stop")); await rejection;
+    first.open(); await Promise.all([running, next]);
+    expect(started).toEqual(["next"]);
+  });
+});

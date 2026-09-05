@@ -4,7 +4,7 @@ description: Create short vertical videos (TikTok / Reels / Shorts / 抖音 / �
 license: AGPL-3.0-only
 metadata:
   {
-    "version": "0.9.1",
+    "version": "0.9.2",
     "homepage": "https://github.com/xixihhhh/clipforge",
     "keywords": "ai-video, faceless-video, text-to-video, tiktok, reels, shorts, 抖音, 快手, 小红书, product-video, tiktok-shop, ugc, ffmpeg, edge-tts",
     "openclaw":
@@ -46,8 +46,8 @@ These are pipeline-correctness facts — violating them produces broken output o
 
 ## Three ways to create
 
-- **MCP tools** (in Claude Desktop / Cursor / Claude Code): `clipforge_create_video`, `clipforge_ingest_product`, `clipforge_product_script`, `clipforge_generate_script`, `clipforge_compose`, `clipforge_search_stock`, `clipforge_list_voices`, `clipforge_list_projects`, `clipforge_get_video`, `clipforge_update_shots`, `clipforge_trends`, `clipforge_import_script`, `clipforge_dub`, `clipforge_cover`, `clipforge_carousel`, `clipforge_shop_qr`, `clipforge_end_card`, `clipforge_qc`, `clipforge_master`, `clipforge_gate`, `clipforge_credits`, `clipforge_native_feel`, `clipforge_preview_gif`, `clipforge_contact_sheet`, `clipforge_export_subtitle`, `clipforge_transcript_inspect`, `clipforge_transcript_edit`, `clipforge_timeline_export`, `clipforge_export_platform`.
-- **CLI**: `node bin/clipforge.mjs <create|product|import|compose|dub|cover|qr|endcard|export|qc|master|gate|credits|native|preview|sheet|carousel|transcript|transcript-edit|timeline|list|voices|get|trends> [flags]` (`--help` for all). `master` analyzes by default; add `--apply` with an explicit operation to create a new version. `gate` exits with code 2 when blocked (fail, or warn under `--strict`) — pipe it straight into shell scripts and CI.
+- **MCP tools** (in Claude Desktop / Cursor / Claude Code): `clipforge_create_video`, `clipforge_ingest_product`, `clipforge_product_script`, `clipforge_generate_script`, `clipforge_compose`, `clipforge_search_stock`, `clipforge_list_voices`, `clipforge_list_projects`, `clipforge_get_video`, `clipforge_update_shots`, `clipforge_trends`, `clipforge_import_script`, `clipforge_dub`, `clipforge_cover`, `clipforge_carousel`, `clipforge_shop_qr`, `clipforge_end_card`, `clipforge_qc`, `clipforge_master`, `clipforge_gate`, `clipforge_credits`, `clipforge_native_feel`, `clipforge_preview_gif`, `clipforge_contact_sheet`, `clipforge_export_subtitle`, `clipforge_find_clips`, `clipforge_transcript_inspect`, `clipforge_transcript_edit`, `clipforge_timeline_export`, `clipforge_export_platform`.
+- **CLI**: `node bin/clipforge.mjs <create|product|import|compose|dub|cover|qr|endcard|export|qc|master|gate|credits|native|preview|sheet|carousel|clips|transcript|transcript-edit|timeline|list|voices|get|trends> [flags]` (`--help` for all). `master` analyzes by default; add `--apply` with an explicit operation to create a new version. `gate` exits with code 2 when blocked (fail, or warn under `--strict`) — pipe it straight into shell scripts and CI.
 - **HTTP**: `POST /api/topic/script` → `POST /api/project/[id]/stock-fill` → `POST /api/project/[id]/compose` → poll `GET /api/project/[id]/compose`.
 
 **Delivery checklist (hard rules 2–4 and 11 in tool form):** compose done → `clipforge_master { apply: false }` → `clipforge_gate` → `clipforge_contact_sheet` (look at it) → only then report the video URL, together with continuity evidence and any `warn` items the gate raised.
@@ -114,10 +114,12 @@ For documentary or science content, search the keyless public-domain sources exp
 ClipForge can cut a user's own recording from its local word-level transcript while preserving the source and every prior edit revision.
 
 1. Call `clipforge_transcript_inspect { projectId, mediaId }`. For long transcripts, continue with `offset` / `limit` until all stable word IDs are loaded; keep its `latestRevision`.
-2. Build the complete plan: `{ version: 1, removedWordIds, removeSilence, silencePaddingMs, wordPaddingMs, burnSubtitles }`.
+2. Optionally call `clipforge_find_clips` with a spoken phrase and target duration to locate a source range. Build the complete plan: `{ version: 1, removedWordIds, removeSilence, silencePaddingMs, wordPaddingMs, burnSubtitles, sourceRange?, captionReplacements? }`. Each caption replacement uses consecutive `wordIds` and corrected `text`; groups cannot overlap.
 3. Call `clipforge_transcript_edit` with that plan, `baseRevision: latestRevision`, a stable 8–128 character `operationId`, and `apply: false`.
 4. Show the returned removed-word/range/duration summary to the user. If they change the request, revise the plan and dry-run again.
 5. After explicit confirmation, repeat the exact plan and operation ID with `apply: true`. Poll through `clipforge_transcript_inspect` until the edit is done, then run the normal gate and visual check.
+
+The web editor also supports named batches of up to 12 clips, per-version progress, cancellation and retry from the saved transcript/plan. A failed or cancelled task can be retried through `POST /api/project/{projectId}/media/{mediaId}/edit` with `{ action: "retry", editId }`; use `action: "cancel"` for an active task. Completed versions remain immutable.
 
 CLI follows the same contract: `transcript` inspects, while `transcript-edit --plan edit.json --revision <n> --operation <id>` dry-runs by default; append `--apply` only after confirmation. A stale revision is a signal to inspect again, never a reason to force the edit.
 

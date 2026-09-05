@@ -6,13 +6,15 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { fileResponseStream } from "@/lib/file-response-stream";
 let directory: string;
 let path: string;
-const bytes = Buffer.alloc(2 * 1024 * 1024, 17);
+const bytes = Buffer.alloc(2 * 1024 * 1024);
+for (let index = 0; index < bytes.length; index++) bytes[index] = index % 251;
 beforeEach(async () => { directory = await mkdtemp(join(tmpdir(), "clipforge-stream-")); path = join(directory, "video.bin"); await writeFile(path, bytes); });
 afterEach(async () => { await rm(directory, { recursive: true, force: true }); });
 describe("cancel-safe file responses", () => {
   it("preserves full and range byte contents", async () => {
-    expect(Buffer.from(await new Response(fileResponseStream(path)).arrayBuffer())).toEqual(bytes);
-    expect(Buffer.from(await new Response(fileResponseStream(path, { start: 10, end: 999 })).arrayBuffer())).toEqual(bytes.subarray(10, 1000));
+    // Compare every byte natively; recursive object equality is costly for multi-MB buffers in CI.
+    expect(Buffer.from(await new Response(fileResponseStream(path)).arrayBuffer()).equals(bytes)).toBe(true);
+    expect(Buffer.from(await new Response(fileResponseStream(path, { start: 10, end: 999 })).arrayBuffer()).equals(bytes.subarray(10, 1000))).toBe(true);
   });
   it("handles repeated seek-style cancellations before and during reads", async () => {
     for (let index = 0; index < 30; index++) {

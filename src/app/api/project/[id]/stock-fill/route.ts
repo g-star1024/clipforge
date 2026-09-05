@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { join } from "path";
 import { access } from "fs/promises";
 import { getDb } from "@/lib/db";
@@ -80,11 +80,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return apiError(req, "脚本没有分镜", "The script has no shots");
   }
 
-  // Shots that already have any asset (avoids duplicate filling and conflicts with AI/product assets on the same shot, unless force is set)
+  // Preserve selected ready assets and pending generation. Failed attempts and inactive
+  // historical takes must not prevent an empty shot from receiving a new candidate.
   const existing = await db
     .select({ shotId: assetsTable.shotId })
     .from(assetsTable)
-    .where(eq(assetsTable.projectId, id));
+    .where(and(
+      eq(assetsTable.projectId, id),
+      eq(assetsTable.selected, true),
+      inArray(assetsTable.status, ["pending", "generating", "done"]),
+    ));
   const already = new Set(existing.map((e) => e.shotId));
 
   // If the local material pool exists, include it in auto-fill: user-owned B-roll competes alongside free stock assets

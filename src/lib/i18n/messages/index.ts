@@ -19,6 +19,7 @@ import { presenters } from "./presenters";
 import { mediaLab } from "./mediaLab";
 import { production } from "./production";
 import { transcript } from "./transcript";
+import { materials } from "./materials";
 
 // 所有命名空间集中注册（新增页面时在此追加一行）
 const namespaces = {
@@ -42,6 +43,7 @@ const namespaces = {
   mediaLab,
   production,
   transcript,
+  materials,
 };
 
 /** messages[locale][namespace][key] = 翻译文本 */

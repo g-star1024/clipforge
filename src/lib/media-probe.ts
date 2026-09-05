@@ -19,6 +19,8 @@ export interface MediaProbe {
   hasAudio: boolean;
   /** Average video frame rate, e.g. 29.97. Falls back to 30 when metadata is absent. */
   frameRate: number;
+  formatName?: string;
+  videoCodec?: string;
 }
 
 export function parseFrameRate(value: unknown, fallback = 30): number {
@@ -29,18 +31,18 @@ export function parseFrameRate(value: unknown, fallback = 30): number {
 }
 
 /** Probe duration/dimensions/audio of a local media file via ffprobe (JSON output). */
-export async function probeMedia(filePath: string): Promise<MediaProbe> {
+export async function probeMedia(filePath: string, options: { signal?: AbortSignal } = {}): Promise<MediaProbe> {
   const { stdout } = await execFileAsync(ffprobeBin(), [
     "-v", "error",
-    "-show_entries", "format=duration",
-    "-show_entries", "stream=codec_type,width,height,avg_frame_rate,r_frame_rate",
+    "-show_entries", "format=duration,format_name",
+    "-show_entries", "stream=codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate",
     "-of", "json",
     filePath,
-  ], { maxBuffer: 4 * 1024 * 1024 });
+  ], { maxBuffer: 4 * 1024 * 1024, timeout: 30_000, signal: options.signal });
 
   const parsed = JSON.parse(stdout) as {
-    format?: { duration?: string };
-    streams?: Array<{ codec_type?: string; width?: number; height?: number; avg_frame_rate?: string; r_frame_rate?: string }>;
+    format?: { duration?: string; format_name?: string };
+    streams?: Array<{ codec_type?: string; codec_name?: string; width?: number; height?: number; avg_frame_rate?: string; r_frame_rate?: string }>;
   };
   const video = parsed.streams?.find((s) => s.codec_type === "video");
   return {
@@ -49,5 +51,7 @@ export async function probeMedia(filePath: string): Promise<MediaProbe> {
     height: video?.height ?? 0,
     hasAudio: !!parsed.streams?.some((s) => s.codec_type === "audio"),
     frameRate: parseFrameRate(video?.avg_frame_rate || video?.r_frame_rate),
+    formatName: parsed.format?.format_name,
+    videoCodec: video?.codec_name,
   };
 }

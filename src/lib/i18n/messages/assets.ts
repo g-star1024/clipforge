@@ -93,8 +93,8 @@ export const assets: NamespaceMessages = {
     badgeReal: "实拍",
     badgeAi: "AI",
     // 上传自有图片（解锁 user_upload 分镜死路 + 任意分镜「换一张」）
-    btnUpload: "上传图片",
-    btnReplaceUpload: "换一张",
+    btnUpload: "上传素材",
+    btnReplaceUpload: "替换素材",
     uploadFailed: "上传失败，请重试",
     // 未配置生图模型提示
     noModelTitle: "未配置默认生图模型",

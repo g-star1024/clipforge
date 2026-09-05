@@ -1377,7 +1377,7 @@ const HANDLERS = {
 
 // ---- Start MCP server ----
 const server = new Server(
-  { name: "clipforge", version: "0.9.2" },
+  { name: "clipforge", version: "0.9.3" },
   { capabilities: { tools: {} } },
 );
 

@@ -4,7 +4,7 @@ description: Create short vertical videos (TikTok / Reels / Shorts / 抖音 / �
 license: AGPL-3.0-only
 metadata:
   {
-    "version": "0.9.2",
+    "version": "0.9.3",
     "homepage": "https://github.com/xixihhhh/clipforge",
     "keywords": "ai-video, faceless-video, text-to-video, tiktok, reels, shorts, 抖音, 快手, 小红书, product-video, tiktok-shop, ugc, ffmpeg, edge-tts",
     "openclaw":
@@ -51,6 +51,10 @@ These are pipeline-correctness facts — violating them produces broken output o
 - **HTTP**: `POST /api/topic/script` → `POST /api/project/[id]/stock-fill` → `POST /api/project/[id]/compose` → poll `GET /api/project/[id]/compose`.
 
 **Delivery checklist (hard rules 2–4 and 11 in tool form):** compose done → `clipforge_master { apply: false }` → `clipforge_gate` → `clipforge_contact_sheet` (look at it) → only then report the video URL, together with continuity evidence and any `warn` items the gate raised.
+
+## Project-owned materials
+
+The Assets page has a Local material library for images and videos (up to 12 files per batch, 80 MB each), with names, tags, previews, deduplication, cancellation, and retry. Assign a material to a shot to make it active while keeping earlier takes. For model-free, network-free shot matching, use the library’s **Fill empty shots locally** action or `POST /api/project/[id]/stock-fill` with `{ "source": "local", "mediaType": "auto" }` and no `llmConfig`. Only that project’s library is read; selected ready/in-progress assets and product-image shots are skipped.
 
 ## Route first, then work
 

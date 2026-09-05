@@ -105,6 +105,23 @@ describe("buildAssetRows", () => {
     expect(rows[0]).toMatchObject({ assetId: "chosen", thumbnailUrl: "/api/files/p/chosen.png" });
   });
 
+  it.each(["failed", "generating", "pending"])("当前素材为 %s 时不会错误展示未选中的旧成片", (status) => {
+    const rows = buildAssetRows([shot({ shotId: 1 })], [
+      { id: "old", shotId: 1, filePath: "/api/files/p/old.png", status: "done", selected: false },
+      { id: "current", shotId: 1, status, selected: true },
+    ], []);
+    expect(rows[0].status).toBe(status);
+    expect(rows[0].thumbnailUrl).toBeUndefined();
+  });
+
+  it("只有未选中历史版本时仍可补齐空镜", () => {
+    const rows = buildAssetRows([shot({ shotId: 1 })], [
+      { shotId: 1, filePath: "/api/files/p/old.png", status: "done", selected: false },
+    ], []);
+    expect(rows[0].status).toBe("pending");
+    expect(rows[0].thumbnailUrl).toBeUndefined();
+  });
+
   it("视频素材恢复真实尾帧和生成控制摘要", () => {
     const generationPlan = {
       version: 1 as const,

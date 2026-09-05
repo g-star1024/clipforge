@@ -39,6 +39,9 @@ import {
 } from "@/lib/video-control-plan";
 import type { GenerationControlSummary } from "@/lib/video-repair-plan";
 import { useT, useLocale } from "@/lib/i18n";
+import { LocalMaterialLibrary } from "./_components/local-material-library";
+import { classifyMaterial, MATERIAL_ACCEPT, type PublicLocalMaterial } from "@/lib/material-library";
+import { uploadLocalMaterial, type MaterialUploadProgress } from "@/lib/upload-local-material";
 import { ProjectHeader } from "@/components/project-header";
 import { ModelCapabilityPreflight } from "@/components/model-capability-preflight";
 import {
@@ -86,6 +89,7 @@ const PRODUCT_SHOT_TYPES = new Set(["product_reveal", "demo", "cta"]);
 export default function AssetsPage() {
   const t = useT("assets");
   const tc = useT("common");
+  const tm = useT("materials");
   const locale = useLocale();
   const { id } = useParams<{ id: string }>();
   const { providers, defaultImageModel, defaultVideoModel, customModels, imageParams, videoParams, llm, motionIntensity, setMotionIntensity, motionRealism, setMotionRealism, chainMode, setChainMode, visualLook, setVisualLook } = useSettingsStore();
@@ -309,6 +313,18 @@ export default function AssetsPage() {
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const pendingUploadShot = useRef<number | null>(null);
   const [uploadingShot, setUploadingShot] = useState<number | null>(null);
+  const shotUploadAbort = useRef<AbortController | null>(null);
+  const [shotUploadProgress, setShotUploadProgress] = useState<MaterialUploadProgress | null>(null);
+  const [materialLibraryRevision, setMaterialLibraryRevision] = useState(0);
+  useEffect(() => () => { shotUploadAbort.current?.abort(); }, [id]);
+  const applyLocalMaterial = async (material: PublicLocalMaterial, shotId: number) => {
+    const res = await fetch(`/api/project/${id}/assets`, {
+      method: "POST", headers: { "Content-Type": "application/json", "Accept-Language": locale },
+      body: JSON.stringify({ shotId, sourceUrl: material.url, type: "user_upload", provider: "local", prompt: [material.originalName, ...material.tags].join(" ") }),
+    });
+    if (!res.ok) { const data = await res.json().catch(() => ({})); throw new Error(data.error || t("uploadFailed")); }
+    await reloadAssets();
+  };
   const openUploadFor = (shotId: number) => {
     pendingUploadShot.current = shotId;
     uploadInputRef.current?.click();
@@ -317,31 +333,35 @@ export default function AssetsPage() {
     const file = e.target.files?.[0];
     const shotId = pendingUploadShot.current;
     e.target.value = ""; // allow re-picking the same file later
-    if (!file || shotId == null) return;
+    if (!file || shotId == null || shotUploadAbort.current) return;
+    const controller = new AbortController(); shotUploadAbort.current = controller;
     setUploadingShot(shotId);
     try {
-      const fd = new FormData();
-      fd.append("files", file);
-      fd.append("projectId", id);
-      const up = await fetch("/api/upload", { method: "POST", body: fd });
-      const upData = await up.json().catch(() => ({}));
-      if (!up.ok || !upData.paths?.[0]) throw new Error(upData.error || t("uploadFailed"));
-      const res = await fetch(`/api/project/${id}/assets`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ shotId, sourceUrl: upData.paths[0], type: "user_upload" }),
-      });
-      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || t("uploadFailed")); }
-      await reloadAssets();
+      if (classifyMaterial(file.name)) {
+        const { material } = await uploadLocalMaterial(id, file, { locale, signal: controller.signal, onProgress: setShotUploadProgress });
+        controller.signal.throwIfAborted();
+        setMaterialLibraryRevision((value) => value + 1);
+        await applyLocalMaterial(material, shotId);
+      } else {
+        // Preserve the existing GIF / SVG / BMP image-only path.
+        const fd = new FormData(); fd.append("files", file); fd.append("projectId", id);
+        const up = await fetch("/api/upload", { method: "POST", body: fd, signal: controller.signal });
+        const data = await up.json().catch(() => ({}));
+        if (!up.ok || !data.paths?.[0]) throw new Error(data.error || t("uploadFailed"));
+        const res = await fetch(`/api/project/${id}/assets`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ shotId, sourceUrl: data.paths[0], type: "user_upload" }) });
+        if (!res.ok) throw new Error(t("uploadFailed"));
+        await reloadAssets();
+      }
     } catch (err) {
-      setStockMsg(err instanceof Error ? err.message : t("uploadFailed"));
+      setStockMsg(controller.signal.aborted ? tm("cancelled") : err instanceof Error ? err.message : t("uploadFailed"));
     } finally {
+      shotUploadAbort.current = null; setShotUploadProgress(null);
       setUploadingShot(null);
       pendingUploadShot.current = null;
     }
   };
 
-  const fillStock = useCallback(async () => {
+  const fillStock = useCallback(async (localOnly = false) => {
     if (isFillingStock) return;
     setIsFillingStock(true);
     setStockMsg(null);
@@ -352,9 +372,9 @@ export default function AssetsPage() {
         // free sources are primarily Openverse images (video sources require a Pexels/Pixabay key, to be integrated in settings later)
         // llmConfig opt-in: semantic rerank picks the best-matching footage per shot (heuristic fallback inside the route)
         body: JSON.stringify({
-          source: "all",
-          mediaType: "image",
-          ...(llm.baseUrl && llm.model ? { llmConfig: { baseUrl: llm.baseUrl, apiKey: llm.apiKey, model: llm.model } } : {}),
+          source: localOnly ? "local" : "all",
+          mediaType: localOnly ? "auto" : "image",
+          ...(!localOnly && llm.baseUrl && llm.model ? { llmConfig: { baseUrl: llm.baseUrl, apiKey: llm.apiKey, model: llm.model } } : {}),
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -924,7 +944,7 @@ export default function AssetsPage() {
       <input
         ref={uploadInputRef}
         type="file"
-        accept="image/*"
+        accept={`${MATERIAL_ACCEPT},.gif,.svg,.bmp`}
         className="hidden"
         onChange={onUploadFileChange}
       />
@@ -946,7 +966,7 @@ export default function AssetsPage() {
             </Link>
             {offerStockFill && (
               <Button
-                onClick={fillStock}
+                onClick={() => void fillStock()}
                 disabled={isFillingStock}
                 variant="outline"
                 size="sm"
@@ -1238,6 +1258,16 @@ export default function AssetsPage() {
           </div>
         )}
 
+        {uploadingShot !== null && <div className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-border p-3 text-sm" role="status">
+          <span>{tm("shot", { id: uploadingShot })} · {shotUploadProgress?.verifying ? tm("verifying") : tm("uploading", { percent: shotUploadProgress?.percent ?? 0 })}</span>
+          <Button variant="outline" className="min-h-11" onClick={() => shotUploadAbort.current?.abort()}>{tm("cancel")}</Button>
+        </div>}
+        <LocalMaterialLibrary key={id} projectId={id} refreshKey={materialLibraryRevision}
+          shots={assets.filter((asset) => asset.visualSource !== "product_image").map((asset) => ({ shotId: asset.shotId, description: asset.description || "" }))}
+          canFill={assets.some((asset) => asset.visualSource !== "product_image" && asset.status !== "done")}
+          busy={isBatchGenerating || isGridGenerating || isFilmGenerating || isFillingStock || uploadingShot !== null || motionShots.size > 0 || assets.some((asset) => asset.status === "generating")}
+          onUse={applyLocalMaterial} onFill={() => fillStock(true)} />
+
         {/* cloud paid-task recovery (issue #16): submitted tasks whose results were never
             retrieved — offer resume instead of a duplicate (billed) resubmit */}
         {pendingTasks.length > 0 && (
@@ -1465,8 +1495,12 @@ export default function AssetsPage() {
                           )}
                           <div className="flex items-center gap-2 text-xs text-muted-foreground">
                             <span>
-                              {asset.assetType === "stock_footage"
+                              {asset.assetProvider === "local"
+                                ? tm("title")
+                                : asset.assetType === "stock_footage"
                                 ? t("sourceStock")
+                                : asset.assetType === "user_upload"
+                                ? t("sourceUserUpload")
                                 : asset.visualSource === "product_image"
                                 ? t("sourceProductImage")
                                 : asset.visualSource === "ai_generate"
@@ -1529,13 +1563,13 @@ export default function AssetsPage() {
                                 : t("btnGenerate")}
                             </Button>
                           )}
-                          {/* upload own image: unblocks user_upload shots (no other action) and lets any non-product shot use the creator's own photo instead of AI/stock */}
+                          {/* Upload the creator's own image or video for a non-product shot. */}
                           {asset.visualSource !== "product_image" && (
                             <Button
                               variant={asset.visualSource === "user_upload" && asset.status !== "done" ? "outline" : "ghost"}
                               size="sm"
                               className="text-xs w-24 text-muted-foreground hover:text-primary"
-                              disabled={uploadingShot === asset.shotId}
+                              disabled={uploadingShot !== null || isBatchGenerating || asset.status === "generating"}
                               onClick={() => openUploadFor(asset.shotId)}
                             >
                               {uploadingShot === asset.shotId ? (

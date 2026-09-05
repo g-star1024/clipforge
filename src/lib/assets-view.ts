@@ -26,6 +26,7 @@ export interface AssetItem {
   isVideo?: boolean;
   /** Actual type of the persisted asset (e.g. stock_footage = automatically matched free-library footage) */
   assetType?: string;
+  assetProvider?: string;
   /**
    * The static keyframe an i2v video was generated FROM (persisted as thumbnailPath). Enables the
    * per-shot fallback loop — re-run just the i2v while keeping the keyframe — and lets a preceding
@@ -48,6 +49,7 @@ export interface SavedAssetRow {
   filePath?: string | null;
   status?: string | null;
   type?: string | null;
+  provider?: string | null;
   /** Static preview image for video assets (free-library videos populate this column); used as <img> thumbnail to avoid rendering an mp4 as an image */
   thumbnailPath?: string | null;
   selected?: boolean | null;
@@ -72,7 +74,7 @@ export function buildAssetRows(
   // selected field fall back to the newest row, preserving the previous single-take behavior.
   const savedByShot = new Map<number, SavedAssetRow>();
   for (const a of savedAssets) {
-    if (!a || !a.filePath || a.status !== "done") continue;
+    if (!a || a.selected === false) continue;
     const current = savedByShot.get(a.shotId);
     if (!current || (a.selected === true && current.selected !== true)) {
       savedByShot.set(a.shotId, a);
@@ -88,7 +90,7 @@ export function buildAssetRows(
 
   return shots.map((s) => {
     const saved = savedByShot.get(s.shotId);
-    if (saved && saved.filePath) {
+    if (saved?.filePath && saved.status === "done") {
       // Video asset: use the static preview image as thumbnail (rendering an mp4 as <img> breaks), and mark isVideo to correctly hide the "animate" entry point
       const isVideo = VIDEO_EXT.test(saved.filePath);
       return {
@@ -106,6 +108,7 @@ export function buildAssetRows(
         thumbnailUrl: isVideo && saved.thumbnailPath ? saved.thumbnailPath : saved.filePath,
         isVideo: isVideo || undefined,
         assetType: saved.type ?? undefined,
+        assetProvider: saved.provider ?? undefined,
         keyframeUrl: isVideo && saved.thumbnailPath ? saved.thumbnailPath : undefined,
         lastFrameUrl: isVideo && saved.lastFrameUrl ? saved.lastFrameUrl : undefined,
         generationPlan: saved.generationPlan ?? undefined,
@@ -121,7 +124,7 @@ export function buildAssetRows(
       characterId: s.characterId || undefined,
       voiceover: s.voiceover || undefined,
       visualSource: s.visualSource,
-      status: s.visualSource === "product_image" ? ("done" as const) : ("pending" as const),
+      status: s.visualSource === "product_image" ? "done" : saved?.status === "failed" || saved?.status === "generating" ? saved.status : "pending",
       thumbnailUrl: s.visualSource === "product_image" ? firstProduct : undefined,
     };
   });

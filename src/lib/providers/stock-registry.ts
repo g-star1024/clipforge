@@ -143,7 +143,7 @@ const stockCache = new TtlCache<AggregateResult>(5 * 60 * 1000, 64);
 /** Cache key: parameters that affect search results + the sources that actually participate (determined by apiKeys, so included in the key). Exported for unit testing. */
 export function stockCacheKey(query: string, opts: StockSearchOptions, sourceIds: string[]): string {
   const { mediaType = "video", orientation, perPage, minSec, maxSec } = opts;
-  return [mediaType, orientation || "", perPage || "", minSec || "", maxSec || "", sourceIds.slice().sort().join(","), query.trim().toLowerCase()].join("|");
+  return [mediaType, orientation || "", perPage || "", minSec || "", maxSec || "", sourceIds.slice().sort().join(","), query.trim().toLowerCase(), opts.localDir || ""].join("|");
 }
 
 export async function searchAllStock(query: string, opts: StockSearchOptions = {}): Promise<AggregateResult> {
@@ -167,7 +167,16 @@ export async function searchAllStock(query: string, opts: StockSearchOptions = {
   // serve from cache when available (same query + params + available sources, within 5 minutes)
   const ck = stockCacheKey(query, opts, usable.map((s) => s.id));
   const cached = stockCache.get(ck);
-  if (cached) return cached;
+  if (cached) {
+    if (!usable.some((s) => s.id === "local")) return cached;
+    // Local edits must be visible immediately, even when remote search results are cached.
+    try {
+      const local = await searchStock("local", query, opts);
+      return { ...cached, candidates: rankStockCandidates([...cached.candidates.filter((c) => c.source !== "local"), ...local], mediaType, opts.orientation), erroredSources: cached.erroredSources.filter((source) => source !== "local") };
+    } catch {
+      return { ...cached, candidates: cached.candidates.filter((c) => c.source !== "local"), erroredSources: [...new Set<StockSourceId>([...cached.erroredSources, "local"])] };
+    }
+  }
 
   const settled = await Promise.allSettled(usable.map((s) => searchStock(s.id, query, opts)));
 

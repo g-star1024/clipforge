@@ -41,6 +41,8 @@
 <details>
 <summary><b>📖 Optional: full feature and release details</b></summary>
 
+- 📁 **Local material library (v0.9.3)**: batch-upload your images and videos, deduplicate identical content, edit names and tags, search and preview, then assign materials to shots. Fill empty shots using only the current project's library; earlier takes are retained, and uploads can be cancelled or retried.
+
 - 🎞️ **One-tap full film**: before generation costs a cent, four narrow judges (pacing / spoken voice / freshness / structure) tear the lines per shot and produce length-preserving rewrites, applied in one click (also a standalone [script-judges skill](skills/script-judges/SKILL.md)); the **storyboard grid** paints ≤9 shots into one 3x3 image — person, outfit, room and light physically consistent — auto-cropped into per-shot keyframes; all keyframes then ride one Seedance 2.5 reference-to-video call into a complete film (≤30s) — native cuts, lines spoken verbatim, continuous audio (real-product samples below).
 - 🎬 **Real moving shots**: i2v + keyframe-chained seamless transitions; 18 named camera presets per shot with Mix two-preset overlays; 8 one-click visual looks; redo any shot keeping its keyframe.
 - 🎭 **Mini-drama selling**: ten script styles across four forms with a free voice per character; six built-in ordinary-person presenters + a real-face constraint; UGC realism trio — spoken-not-written lines (hooks start mid-conversation, no punchline endings), named-light lived-in first frames, behavior beats rotating per talking shot.

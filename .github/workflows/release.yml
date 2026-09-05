@@ -88,12 +88,17 @@ jobs:
           zip -r ../clipforge-skill.zip clipforge-video
           zip -r ../clipforge-script-judges.zip script-judges
 
-      - name: 上传 skill zip 到 Release
+      - name: 打包 MCP 安装包
+        working-directory: mcp
+        run: npm pack --ignore-scripts --pack-destination ..
+
+      - name: 上传 Skill 与 MCP 安装包到 Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             clipforge-skill.zip
             clipforge-script-judges.zip
+            clipforge-mcp-*.tgz
           fail_on_unmatched_files: true
           draft: true
         env:

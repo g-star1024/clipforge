@@ -83,16 +83,18 @@ claude mcp add clipforge -- node /绝对路径/clipforge/mcp/clipforge-mcp.mjs
 # 然后在该 MCP 的 env 里补上 CLIPFORGE_LLM_* （或先 export 再启动）
 ```
 
-## 零安装接入（发布到 npm 后）
+## 无需克隆仓库接入 / Connect without cloning
 
-把 `mcp/` 发布为 npm 包 `clipforge-mcp` 后，客户端无需克隆仓库、直接 `npx` 接入：
+通过 GitHub Release 中的版本化 MCP 安装包，客户端无需克隆仓库、直接用 `npx` 接入。需要 Node.js 18 或以上；首次运行会下载安装包及依赖，仍需启动一个 ClipForge 实例。
+
+Use the versioned MCP package attached to the GitHub Release with Node.js 18 or later. The first launch downloads the package and its dependencies. A running ClipForge instance is still required.
 
 ```json
 {
   "mcpServers": {
     "clipforge": {
       "command": "npx",
-      "args": ["-y", "clipforge-mcp"],
+      "args": ["-y", "--package", "https://github.com/xixihhhh/clipforge/releases/download/v0.9.2/clipforge-mcp-0.1.3.tgz", "clipforge-mcp"],
       "env": {
         "CLIPFORGE_BASE_URL": "http://localhost:3000",
         "CLIPFORGE_LLM_BASE_URL": "https://api.atlascloud.ai/v1",
@@ -109,9 +111,9 @@ claude mcp add clipforge -- node /绝对路径/clipforge/mcp/clipforge-mcp.mjs
 
 ## 发布到 npm 与官方 MCP Registry
 
-让任意 MCP 客户端 `npx` 即装，并被 Glama / Smithery / PulseMCP 等生态自动收录（本仓库已备好 `mcp/package.json`）：
+以下为维护者可选发布流程，需要有效的 npm 发布权限与 MCP Registry 授权。当前可直接使用上面的 GitHub Release 安装包；这些配置文件不代表已在 npm 或 MCP Registry 上架。
 
-`mcp/package.json` 已带 registry 归属验证字段 `mcpName: io.github.xixihhhh/clipforge`，`mcp/server.json`（2025-12-11 schema）也已备好——发布只剩三条命令：
+`mcp/package.json` 已带归属验证字段 `mcpName: io.github.xixihhhh/clipforge`，`mcp/server.json` 是注册表发布配置模板。先确认 npm 发布成功，再继续注册表发布：
 
 ```bash
 # 1) 发布 npm 包（在 mcp/ 目录，用你的 npm 账号；registry 校验 npm 包里必须含 mcpName，已就位）
